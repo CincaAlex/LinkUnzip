@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "LinkUnzip",
-  "version": "0.2.0",
+  "name": "LinkUnzip: extract ZIP files straight from links",
+  "version": "1.0.0",
   "description": "Extract a ZIP from a link straight into a folder without saving the ZIP. Every file checked. Windows, with a small free helper app.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp1Hg69res4Gmo8PR/zatyCyYMz+tx7AbiQuIfxFqrb9i55RdaLL76U5iT8jGPmjJfVtS4PJCR6MlUhSIEoaWFePoKre2IRuLMcgCaNsPn9BOXveyNpCWMAnOMVfPMe2PDlMK+JUXwU087xnQh2I9d9qTUZffD4QuyZBCGAhmcMFH+3W0CDmqmi8ezb24ZddWAl18gpqYexeDOrKWJvJDd54PEXI9K8CobNFz6DR9EcYgr8WT0BM2gypXmXc8YY9IAgDmr7+8xvVXYP1EH+u/N9iIys6oc2uq1rhHlzLjT1dgrOKC1s5aOSglz8eyJN8KteD31vfP4oINE0gNCWq0KQIDAQAB",
   "minimum_chrome_version": "116",

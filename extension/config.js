@@ -1,6 +1,6 @@
 // Where people download the Windows helper (dist/linkunzip-setup.exe, built by tools/package.py).
 // Empty until it is published somewhere; the welcome page then says so instead of linking.
-export const DOWNLOAD_URL = "";
+export const DOWNLOAD_URL = "https://github.com/CincaAlex/LinkUnzip/releases/latest/download/linkunzip-setup.exe";
 
 // The helper this extension is built for: `hello.protocol` (helpers that don't send one speak
 // protocol 1) and `hello.version`. An older helper keeps working with fewer features (no Browse...,

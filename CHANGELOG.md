@@ -6,7 +6,9 @@ the extension always share one version number.
 
 ## Unreleased
 
-Work towards 1.0, the first public release.
+## 1.0.0 - 2026-10-05
+
+The first public release.
 
 ### Added
 - The **File List**: folders with breadcrumbs, checkboxes, a Filter box that searches every name,

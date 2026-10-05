@@ -53,7 +53,7 @@ body:
     attributes:
       label: Versions (if there was no Copy details text)
       description: LinkUnzip version (popup header or Settings > Apps), browser version, Windows version.
-      placeholder: LinkUnzip 0.2.0, Chrome 130, Windows 11 24H2
+      placeholder: LinkUnzip 1.0.0, Chrome 130, Windows 11 24H2
   - type: textarea
     id: more
     attributes:

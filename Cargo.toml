@@ -1,6 +1,6 @@
 [package]
 name = "linkunzip"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2024"
 description = "Extract a ZIP straight from a link into a folder, without ever saving the ZIP"
 license = "GPL-3.0-or-later"
