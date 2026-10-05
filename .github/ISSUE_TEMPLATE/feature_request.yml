@@ -1,0 +1,27 @@
+name: Feature request
+description: An idea for something LinkUnzip should do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search the open and closed issues first, and the "What it doesn't do (yet)" part
+        of the README: your idea may already be planned, or ruled out with the reason.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation and the problem, before any solution.
+      placeholder: I often download big datasets from ... and only need ...
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: How you imagine LinkUnzip could handle it.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today?
+      description: Workarounds or other tools you use for this.

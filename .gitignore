@@ -1,0 +1,40 @@
+# Rust build output
+/target
+**/*.rs.bk
+
+# Build outputs of tools/package.py (installer, store zip, checksums)
+/dist
+/extension/linkunzip-setup.exe
+
+# Generated test archives
+/test-data
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node (the end-to-end test installs puppeteer-core outside the repository)
+node_modules/
+/package.json
+/package-lock.json
+
+# Keys and certificates: never commit these. Chrome's "Pack extension" writes a .pem next to the
+# folder, and code-signing certificates come as .pfx/.p12.
+*.pem
+*.pfx
+*.p12
+*.key
+*.crx
+.env
+
+# Editors and operating system files
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs
+*.log

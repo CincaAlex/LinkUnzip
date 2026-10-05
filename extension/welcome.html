@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Set up LinkUnzip</title>
+    <link rel="icon" href="icons/icon32.png" />
+    <script src="theme.js"></script>
+    <link rel="stylesheet" href="welcome.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="icons/icon128.png" alt="" width="56" height="56" />
+        <div>
+          <h1>LinkUnzip</h1>
+          <p class="muted">Extract a ZIP straight from a link into a folder, without ever saving the ZIP.</p>
+        </div>
+      </header>
+
+      <ol class="steps">
+        <li class="step" data-state="done">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h2>Add the extension</h2>
+            <p class="muted">Done.</p>
+          </div>
+        </li>
+
+        <li class="step" id="step-helper" data-state="checking">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h2 id="helper-title">Install the LinkUnzip helper for Windows</h2>
+            <p id="helper-status" class="status" role="status">Checking this PC...</p>
+            <p id="helper-detail" class="detail" hidden></p>
+            <p id="helper-update" class="muted" hidden>
+              A newer helper is available: it adds Browse..., choosing files and Resume.
+              <a href="welcome.html?update=1">Update the helper</a>
+            </p>
+            <div id="helper-setup" hidden>
+              <p id="helper-why" class="muted">
+                A browser extension can't write files to your disk by itself, so a small helper program does the
+                downloading and unpacking. It installs just for you (no administrator rights) and only runs while
+                you're using LinkUnzip.
+              </p>
+              <div class="btn-row">
+                <button id="download" class="btn primary" type="button" hidden>Download linkunzip-setup.exe</button>
+                <span id="no-download" class="btn disabled" hidden>Download not published yet</span>
+              </div>
+              <p class="muted small">
+                When it's downloaded, click <b>Open the installer</b>, then <b>Install</b>. If the browser asks, choose
+                <b>Keep</b>. Windows may say it doesn't recognise the app: click <b>More info</b>, then <b>Run anyway</b>.
+              </p>
+              <p class="muted small">
+                This page notices the helper by itself a few seconds after it is installed. If it doesn't, close every
+                browser window and open the browser again.
+              </p>
+              <details>
+                <summary>Prefer the terminal?</summary>
+                <p class="muted small">With linkunzip.exe downloaded, this does the same as the installer:</p>
+                <code>linkunzip host install</code>
+              </details>
+            </div>
+          </div>
+        </li>
+
+        <li class="step" id="step-try" data-state="todo">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h2>Try it</h2>
+            <p class="muted">
+              Right-click any link to a <b>.zip</b> file and choose <b>Extract with LinkUnzip</b>. Or click the LinkUnzip
+              icon in the toolbar and paste a link.
+            </p>
+            <p class="muted small">
+              Can't see the icon? Click the puzzle piece next to the address bar, then the pin next to LinkUnzip.
+            </p>
+          </div>
+        </li>
+      </ol>
+    </main>
+    <script type="module" src="welcome.js"></script>
+  </body>
+</html>

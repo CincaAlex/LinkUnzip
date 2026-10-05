@@ -1,0 +1,61 @@
+name: Bug report
+description: Something went wrong or didn't work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Found a security problem? Please don't post it here: see
+        SECURITY.md for how to report it privately.
+
+        **Please don't paste private or signed links** (links with `token=`, `sig=`, `Signature=`,
+        `X-Amz-...` and so on): anyone could use them. The host name is enough.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        I right-clicked a zip link on example.com and chose Extract with LinkUnzip.
+        I expected the file list, but the popup said ...
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Copy details
+      description: |
+        If the popup showed an error, click **Copy details** and paste the text here. It contains
+        the LinkUnzip, helper and browser versions, Windows version, the error code, the HTTP
+        status and the host name, never the full link or the folder.
+      render: text
+  - type: input
+    id: host
+    attributes:
+      label: Where was the zip?
+      description: The site or a public link that shows the problem (public links only).
+      placeholder: download.example.com, or a public link
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome
+        - Edge
+        - Brave
+        - Chromium
+        - Other
+        - Command line only
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions (if there was no Copy details text)
+      description: LinkUnzip version (popup header or Settings > Apps), browser version, Windows version.
+      placeholder: LinkUnzip 0.2.0, Chrome 130, Windows 11 24H2
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else?
+      description: Command-line output (`linkunzip extract ...`), screenshots, what the zip contains.

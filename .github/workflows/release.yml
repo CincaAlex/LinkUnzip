@@ -1,0 +1,154 @@
+# Builds a release from a version tag (v1.2.3) and attaches it to a GitHub Release:
+#   linkunzip-setup.exe              stable name, so .../releases/latest/download/linkunzip-setup.exe
+#                                    always points at the newest published installer
+#   linkunzip-extension-<v>.zip      the extension for the Chrome Web Store / Edge Add-ons
+#   SHA256SUMS.txt
+#
+# Repository variables (Settings > Secrets and variables > Actions > Variables), all optional:
+#   LINKUNZIP_EXTRA_IDS      store extension IDs the helper also accepts, comma separated
+#   LINKUNZIP_SIGN_COMMAND   signing command with {file} (docs/signing.md); empty = unsigned build
+#   LINKUNZIP_RELEASE_DRAFT  "false" publishes at once; otherwise the release is created as a
+#                            draft to check (and, for local signing, to swap in signed files)
+#
+# Run it by hand (Actions > Release > Run workflow) for a dry run: it builds and keeps the files
+# as a workflow artifact, without creating a release.
+# Full checklist: docs/release.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      LINKUNZIP_EXTRA_IDS: ${{ vars.LINKUNZIP_EXTRA_IDS }}
+      LINKUNZIP_SIGN_COMMAND: ${{ vars.LINKUNZIP_SIGN_COMMAND }}
+      LINKUNZIP_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Check the tag matches the version
+        shell: python
+        run: |
+          import json, os, re, sys
+          cargo = re.search(r'^version\s*=\s*"([^"]+)"', open("Cargo.toml", encoding="utf-8").read(), re.M).group(1)
+          ext = json.load(open("extension/manifest.json", encoding="utf-8"))["version"]
+          if ext != cargo:
+              sys.exit(f"extension/manifest.json says {ext}, Cargo.toml says {cargo}: bump both (docs/release.md)")
+          if os.environ["GITHUB_EVENT_NAME"] == "push" and os.environ["GITHUB_REF_NAME"] != f"v{cargo}":
+              sys.exit(f"tag {os.environ['GITHUB_REF_NAME']} does not match version {cargo} (expected v{cargo})")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write(f"VERSION={cargo}\n")
+          print(f"LinkUnzip {cargo}")
+
+      - name: Install Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Install Inno Setup
+        run: |
+          function Find-Iscc {
+            @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+              Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $iscc = Find-Iscc
+          }
+          if (-not $iscc) { Write-Error "Inno Setup 6 was not found after installing it"; exit 1 }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "Inno Setup: $iscc"
+
+      # Signing in CI: if the certificate provider needs a setup step (signing in to its cloud
+      # service, installing its client), it goes here, guarded by the same `if`. docs/signing.md
+      # describes the options; secrets belong in repository secrets, never in the command.
+      - name: Put signtool on PATH
+        if: vars.LINKUNZIP_SIGN_COMMAND != ''
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.*\x64\signtool.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $signtool) { Write-Error "signtool.exe not found in the Windows SDK"; exit 1 }
+          $signtool.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "signtool: $($signtool.FullName)"
+
+      - name: Build the installer and the store zip
+        run: python tools/package.py
+
+      - name: Check the signatures
+        if: vars.LINKUNZIP_SIGN_COMMAND != ''
+        run: |
+          foreach ($f in "dist\stage\linkunzip.exe", "dist\linkunzip-setup.exe") {
+            $s = Get-AuthenticodeSignature $f
+            "{0}: {1}, signed by {2}" -f $f, $s.Status, $s.SignerCertificate.Subject
+            if ($s.Status -ne "Valid") { Write-Error "$f is not validly signed"; exit 1 }
+            if (-not $s.TimeStamperCertificate) { Write-Error "$f has no timestamp"; exit 1 }
+          }
+
+      - name: Write the release notes
+        shell: python
+        env:
+          SIGNED: ${{ vars.LINKUNZIP_SIGN_COMMAND != '' }}
+        run: |
+          import os, re
+          version = os.environ["VERSION"]
+          changelog = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(rf"^## {re.escape(version)}\b[^\n]*\n(.*?)(?=^## |\Z)", changelog, re.M | re.S)
+          notes = m.group(1).strip() if m else "See CHANGELOG.md."
+          notes += f"""
+
+          ## Download
+
+          - **linkunzip-setup.exe**: the Windows helper (installs just for you, no administrator rights).
+            The extension's setup page downloads it for you.
+          - **linkunzip-extension-{version}.zip**: the extension as submitted to the browser stores.
+          - **SHA256SUMS.txt**: checksums. Compare with `Get-FileHash .\\linkunzip-setup.exe -Algorithm SHA256`.
+          """
+          if os.environ["SIGNED"] != "true":
+              notes += ("\nThis build is not code-signed, so Windows SmartScreen may warn about an unknown "
+                        "publisher: choose *More info*, then *Run anyway*, after checking the SHA-256.\n")
+          with open("dist/release-notes.md", "w", encoding="utf-8") as fh:
+              fh.write(notes)
+          print(notes)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linkunzip-${{ env.VERSION }}
+          path: |
+            dist/linkunzip-setup.exe
+            dist/linkunzip-extension-*.zip
+            dist/SHA256SUMS.txt
+            dist/release-notes.md
+          if-no-files-found: error
+
+      - name: Create the GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v3
+        with:
+          name: LinkUnzip ${{ env.VERSION }}
+          body_path: dist/release-notes.md
+          draft: ${{ vars.LINKUNZIP_RELEASE_DRAFT != 'false' }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/linkunzip-setup.exe
+            dist/linkunzip-extension-*.zip
+            dist/SHA256SUMS.txt

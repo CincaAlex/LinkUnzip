@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LinkUnzip</title>
+    <script src="theme.js"></script>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <button id="theme-btn" class="icon-btn left" type="button" title="Switch to dark mode" aria-label="Switch to dark mode">
+        <svg class="moon" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+          <path fill="currentColor" d="M20.6 14.3A8.6 8.6 0 0 1 9.7 3.4a8.6 8.6 0 1 0 10.9 10.9Z" />
+        </svg>
+        <svg class="sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden>
+          <circle cx="12" cy="12" r="4.4" fill="currentColor" />
+          <path
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            d="M12 2.5v2.3M12 19.2v2.3M2.5 12h2.3M19.2 12h2.3M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M5.3 18.7l1.6-1.6M17.1 6.9l1.6-1.6"
+          />
+        </svg>
+      </button>
+      <div class="brand">
+        <img class="mark" src="icons/logo-lines.png" alt="" width="20" height="34" />
+        <span class="wordmark" aria-label="LinkUnzip"><b>LINK</b>UNZIP</span>
+      </div>
+      <button id="settings-btn" class="icon-btn" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="settings">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Zm8.2-2.6-1.7-1a6.9 6.9 0 0 0 0-1.8l1.7-1a.6.6 0 0 0 .2-.8l-1.6-2.8a.6.6 0 0 0-.8-.2l-1.7 1a7.6 7.6 0 0 0-1.6-.9l-.3-1.9a.6.6 0 0 0-.6-.5H10.2a.6.6 0 0 0-.6.5l-.3 1.9c-.6.2-1.1.5-1.6.9l-1.7-1a.6.6 0 0 0-.8.2L3.6 8.3a.6.6 0 0 0 .2.8l1.7 1a6.9 6.9 0 0 0 0 1.8l-1.7 1a.6.6 0 0 0-.2.8l1.6 2.8c.2.3.5.4.8.2l1.7-1c.5.4 1 .7 1.6.9l.3 1.9c0 .3.3.5.6.5h3.2c.3 0 .6-.2.6-.5l.3-1.9c.6-.2 1.1-.5 1.6-.9l1.7 1c.3.2.6.1.8-.2l1.6-2.8a.6.6 0 0 0-.2-.8Z"
+          />
+        </svg>
+      </button>
+      <!-- the zip on screen and a way to put it away; filled in by popup.js -->
+      <div id="job-line" class="job-line" hidden></div>
+    </header>
+
+    <main id="view"></main>
+    <!-- What screen readers hear when the view changes (the view itself is not a live region:
+         progress numbers change several times a second). -->
+    <div id="announce" class="sr-only" aria-live="polite"></div>
+
+    <section id="settings" aria-label="Settings" hidden>
+      <div class="card panel">
+        <h2>Settings</h2>
+        <fieldset class="choice" id="set-theme">
+          <legend>Appearance</legend>
+          <div class="segmented">
+            <label><input type="radio" name="theme" value="system" /><span>Match Windows</span></label>
+            <label><input type="radio" name="theme" value="light" /><span>Light</span></label>
+            <label><input type="radio" name="theme" value="dark" /><span>Dark</span></label>
+          </div>
+        </fieldset>
+        <div class="field">
+          <label for="set-base">Extract into (base folder)</label>
+          <div class="path-row">
+            <button id="set-base-browse" class="btn browse" type="button" aria-label="Browse for the base folder" hidden>Browse...</button>
+            <input id="set-base" type="text" spellcheck="false" placeholder="Downloads\LinkUnzip" />
+          </div>
+        </div>
+        <label class="field inline">
+          <span>Parallel connections</span>
+          <input id="set-jobs" type="number" min="1" max="16" />
+        </label>
+      </div>
+      <div class="card panel">
+        <label class="check">
+          <input id="set-login" type="checkbox" />
+          <span>
+            Use my login when a site needs it
+            <small>When a download needs you to be signed in, LinkUnzip offers to send that one site's cookies to the LinkUnzip helper on this PC. Chrome asks once per site.</small>
+          </span>
+        </label>
+        <label class="check">
+          <input id="set-login-all" type="checkbox" />
+          <span>
+            Use my login on every site
+            <small>Passes the zip site's cookies to the helper on this PC, which sends them only to that site, without asking per site. Chrome asks you once.</small>
+          </span>
+        </label>
+        <label class="check">
+          <input id="set-catch" type="checkbox" />
+          <span>
+            Catch .zip downloads
+            <small>Stops Chrome from saving a .zip and shows what LinkUnzip would do instead.</small>
+          </span>
+        </label>
+      </div>
+      <p id="host-info" class="muted small"></p>
+      <div class="actions">
+        <button id="settings-done" class="btn" type="button">Done</button>
+      </div>
+    </section>
+
+    <!-- the current view's buttons, kept in view below the scrolling middle -->
+    <div id="actions-slot"></div>
+
+    <footer id="statusbar">
+      <span>Status: <b id="status-text">Ready</b></span>
+      <span>No Account Needed</span>
+      <span id="host-chip" class="chip" data-state="unknown">Helper Status <b>Connecting...</b></span>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

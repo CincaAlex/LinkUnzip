@@ -1,0 +1,405 @@
+<!doctype html>
+<!--
+  LinkUnzip website (GitHub Pages). Self-contained: no scripts, no trackers, no web fonts.
+  Placeholders, filled in at release:
+    {{STORE_URL}}       Chrome Web Store listing   (publish this page only once the listing is live;
+                        until then, never write "available in the Chrome Web Store")
+    {{EDGE_STORE_URL}}  Edge Add-ons listing
+    https://github.com/CincaAlex/LinkUnzip      the public repository      (say "source code" only once it is public)
+    https://github.com/CincaAlex/LinkUnzip/releases/latest     the latest GitHub Release page (linkunzip-setup.exe, SHA256SUMS.txt)
+    https://linkunzip.app        where this site lives (for the social preview image)
+  Every number on this page was measured on the developer's PC.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LinkUnzip: extract a ZIP straight from a link</title>
+    <meta
+      name="description"
+      content="A Chrome, Edge and Brave extension with a small Windows helper that extracts a ZIP from a link straight into a folder, without saving the ZIP. Free, no account, no tracking."
+    />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f5f8f8" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0f12" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="logo.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon-256.png" />
+    <meta property="og:title" content="LinkUnzip: extract a ZIP straight from a link" />
+    <meta property="og:description" content="The ZIP is never saved. See the cost first, take only the files you need, every file checked." />
+    <meta property="og:image" content="https://linkunzip.app/og.png" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <header class="wrap top">
+      <a class="brand" href="./" aria-label="LinkUnzip home">
+        <img src="logo.svg" alt="" width="32" height="32" />
+        <span>LinkUnzip</span>
+      </a>
+      <nav aria-label="Main">
+        <a class="opt" href="#how">How it works</a>
+        <a class="opt" href="#numbers">Numbers</a>
+        <a href="#faq">FAQ</a>
+        <a href="https://github.com/CincaAlex/LinkUnzip">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <div class="hero">
+        <div class="wrap hero-grid">
+          <div>
+            <h1>Extract a ZIP straight from a link. <span>Never save the ZIP.</span></h1>
+            <p class="lead">
+              Right-click a link to a .zip and LinkUnzip writes its files straight into a folder. It reads the zip's
+              index first, shows what it will cost, downloads only the parts it needs and checks every file.
+            </p>
+            <div class="cta">
+              <a class="btn primary" href="{{STORE_URL}}">Add to Chrome</a>
+              <a class="btn" href="https://github.com/CincaAlex/LinkUnzip/releases/latest">Download the helper</a>
+            </div>
+            <p class="fine">Free. Windows 10 and 11, with Chrome, Edge or Brave. No account, no ads, no tracking.</p>
+            <p class="fine">Using Edge? It is also on <a href="{{EDGE_STORE_URL}}">Edge Add-ons</a>.</p>
+          </div>
+
+          <figure class="card compare" aria-labelledby="cmp-caption" style="margin: 0">
+            <p class="what" id="cmp-caption"><b>Blender 4.2 for Windows</b> · a 365.8 MB zip · 5,518 files</p>
+            <div class="cmp-row">
+              <div class="cmp-top"><span class="cmp-title">Download, then extract</span><span class="cmp-total">1.26 GB</span></div>
+              <div class="bar" role="img" aria-label="925.6 MB of files plus the 365.8 MB zip">
+                <div class="seg files" style="width: 71.67%"></div>
+                <div class="seg zip" style="width: 28.33%"></div>
+              </div>
+            </div>
+            <div class="cmp-row ours">
+              <div class="cmp-top"><span class="cmp-title">LinkUnzip</span><span class="cmp-total">925.6 MB</span></div>
+              <div class="bar" role="img" aria-label="925.6 MB of files and no zip">
+                <div class="seg files" style="width: 71.67%"></div>
+                <div class="seg empty" style="width: 28.33%"></div>
+              </div>
+            </div>
+            <ul class="legend">
+              <li><i class="files"></i>files 925.6 MB</li>
+              <li><i class="zip"></i>zip 365.8 MB</li>
+              <li class="zero"><i class="empty"></i>zip on disk 0 B</li>
+            </ul>
+            <div class="zero-line"><span>Zip stored on disk</span><b>0 B</b></div>
+            <figcaption class="fine">Disk space needed, measured with LinkUnzip on the developer's PC.</figcaption>
+          </figure>
+        </div>
+      </div>
+
+      <section id="how">
+        <div class="wrap">
+          <p class="kicker">How it works</p>
+          <h2>Three steps, no ZIP left behind</h2>
+          <p class="intro">
+            A ZIP keeps its table of contents at the end of the file. LinkUnzip reads that part first, so it knows every
+            file, its size and where it sits in the zip before a single byte is written.
+          </p>
+          <ol class="steps">
+            <li class="card">
+              <h3>Right-click a .zip link</h3>
+              <p>
+                Choose <b>Extract with LinkUnzip</b>. Or click the toolbar icon and paste a link: it also lists the .zip
+                links on the page you are on.
+              </p>
+            </li>
+            <li class="card">
+              <h3>See the cost, pick what you want</h3>
+              <p>
+                The files, their sizes, the space a normal download would need and the space you have. Tick only the
+                files you want and choose a folder with <b>Browse...</b>
+              </p>
+            </li>
+            <li class="card">
+              <h3>Files land in the folder</h3>
+              <p>
+                Only the needed parts of the zip, over several connections. Each file gets its real name only after its
+                CRC-32 and size check out. Then <b>Open folder</b>.
+              </p>
+            </li>
+          </ol>
+          <p class="note">
+            The first time: add the extension, then the setup page that opens installs the free LinkUnzip helper for
+            Windows. Two clicks, just for you, no administrator rights. <a href="#faq-helper">Why a helper?</a>
+          </p>
+          <details class="under">
+            <summary>Under the hood</summary>
+            <p>
+              LinkUnzip first asks the server for just the end of the file (HTTP Range requests), finds the zip's
+              central directory (ZIP64 included), and plans which byte ranges hold the files you chose. Neighbouring files are
+              fetched together in one request per span, several spans at a time (4 connections by default, 1 to 16).
+              Each file is inflated as it arrives, written as <code>.part</code>, checked against the CRC-32 and size in
+              the index, then renamed. Servers that cannot send part of a file, like GitHub's <b>Download ZIP</b>, are
+              read once from start to end instead: one connection, no preview, still no ZIP on disk.
+            </p>
+          </details>
+        </div>
+      </section>
+
+      <section id="numbers">
+        <div class="wrap">
+          <p class="kicker">Measured, not promised</p>
+          <h2>Real runs</h2>
+          <p class="intro">Three archives, run on the developer's PC and home connection.</p>
+          <div class="numbers">
+            <article class="card num">
+              <h3>Blender 4.2 for Windows</h3>
+              <p class="big">0 B</p>
+              <p class="big-label">of zip on disk</p>
+              <dl>
+                <dt>Zip</dt>
+                <dd>365.8 MB</dd>
+                <dt>Files</dt>
+                <dd>5,518</dd>
+                <dt>Written</dt>
+                <dd>925.6 MB</dd>
+                <dt>Downloaded</dt>
+                <dd>364.1 MB</dd>
+                <dt>Requests</dt>
+                <dd>4</dd>
+                <dt>The usual way needs</dt>
+                <dd>1.26 GB</dd>
+                <dt>Time</dt>
+                <dd>about 32-35 s</dd>
+              </dl>
+            </article>
+            <article class="card num">
+              <h3>One photo out of COCO train2017</h3>
+              <p class="big">2.5 s</p>
+              <p class="big-label">for one file from an 18.01 GB zip</p>
+              <dl>
+                <dt>Zip</dt>
+                <dd>18.01 GB</dd>
+                <dt>Files</dt>
+                <dd>118,287</dd>
+                <dt>Read</dt>
+                <dd>12.5 MB index + 219 KB</dd>
+                <dt>Written</dt>
+                <dd>the one photo</dd>
+              </dl>
+            </article>
+            <article class="card num">
+              <h3>A GitHub "Download ZIP"</h3>
+              <p class="big">1 pass</p>
+              <p class="big-label">for a server that can't send parts</p>
+              <dl>
+                <dt>Files</dt>
+                <dd>1,562</dd>
+                <dt>Written</dt>
+                <dd>35.1 MB</dd>
+                <dt>Read</dt>
+                <dd>13.1 MB in one pass</dd>
+                <dt>Time</dt>
+                <dd>about 7-8 s</dd>
+              </dl>
+            </article>
+          </div>
+          <p class="footnote">
+            Your times depend on your connection and on the server. Sizes use Windows units (1 GB = 1024 MB), like
+            File Explorer.
+          </p>
+        </div>
+      </section>
+
+      <section id="compare">
+        <div class="wrap">
+          <p class="kicker">Side by side</p>
+          <h2>LinkUnzip vs download, then extract</h2>
+          <p class="intro">Including the parts where the usual way is still the better fit.</p>
+          <div class="card" style="overflow: hidden">
+            <table class="vs">
+              <thead>
+                <tr>
+                  <th scope="col"><span class="skip">Topic</span></th>
+                  <th scope="col">Download, then extract</th>
+                  <th scope="col" class="ours">LinkUnzip</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Disk space</th>
+                  <td data-label="Download, then extract">The ZIP plus the files (1.26 GB for Blender 4.2)</td>
+                  <td data-label="LinkUnzip" class="ours">The files only (925.6 MB); 0 B of ZIP</td>
+                </tr>
+                <tr>
+                  <th scope="row">Before you start</th>
+                  <td data-label="Download, then extract">You see what's inside after the download</td>
+                  <td data-label="LinkUnzip" class="ours">File list, sizes and free space first, from the index alone</td>
+                </tr>
+                <tr>
+                  <th scope="row">A few files from a big ZIP</th>
+                  <td data-label="Download, then extract">Download all of it</td>
+                  <td data-label="LinkUnzip" class="ours">Download those files (plus the index)</td>
+                </tr>
+                <tr>
+                  <th scope="row">Checking</th>
+                  <td data-label="Download, then extract">Depends on the unzip tool</td>
+                  <td data-label="LinkUnzip" class="ours">Every file checked (CRC-32 and size) before it gets its name</td>
+                </tr>
+                <tr>
+                  <th scope="row">If the connection drops</th>
+                  <td data-label="Download, then extract">The browser can often resume the download</td>
+                  <td data-label="LinkUnzip" class="ours">The file being written restarts; finished files are kept, and Resume skips them</td>
+                </tr>
+                <tr>
+                  <th scope="row">Servers</th>
+                  <td data-label="Download, then extract">Any</td>
+                  <td data-label="LinkUnzip" class="ours">Best with servers that send parts of a file; others are read in one pass, without the preview</td>
+                </tr>
+                <tr>
+                  <th scope="row">Where it runs</th>
+                  <td data-label="Download, then extract">Anywhere</td>
+                  <td data-label="LinkUnzip" class="ours">Windows, with the free helper (for now)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="faq">
+        <div class="wrap">
+          <p class="kicker">FAQ</p>
+          <h2>Questions</h2>
+          <div class="faq">
+            <details class="card" id="faq-helper">
+              <summary>Why does it need a helper program?</summary>
+              <div class="answer">
+                <p>
+                  A browser extension can't write a folder full of files wherever you choose, and can't stream gigabytes
+                  to disk efficiently. The LinkUnzip helper is a small Windows program that does the downloading and
+                  unpacking.
+                </p>
+                <p>
+                  It installs just for you, without administrator rights, and only runs while you use LinkUnzip: it
+                  closes about 30 seconds after the last job. It talks only to the extension and to the server of the
+                  link you chose.
+                </p>
+              </div>
+            </details>
+
+            <details class="card">
+              <summary>Why Windows only?</summary>
+              <div class="answer">
+                <p>
+                  The helper is built and tested on Windows so far. macOS and Linux helpers, and a Firefox version, are
+                  on the list, with no date yet.
+                </p>
+              </div>
+            </details>
+
+            <details class="card">
+              <summary>Windows says it doesn't recognise the installer</summary>
+              <div class="answer">
+                <p>
+                  New programs have to build a reputation with Microsoft Defender SmartScreen, and an installer without a
+                  code signature shows "Windows protected your PC". Click <b>More info</b>, then <b>Run anyway</b>.
+                </p>
+                <p>
+                  You can check the file against <code>SHA256SUMS.txt</code> on the
+                  <a href="https://github.com/CincaAlex/LinkUnzip/releases/latest">release page</a>, and read the source code on
+                  <a href="https://github.com/CincaAlex/LinkUnzip">GitHub</a>.
+                </p>
+              </div>
+            </details>
+
+            <details class="card">
+              <summary>Does it work with private links? Is reading my cookies safe?</summary>
+              <div class="answer">
+                <p>
+                  Public links need no permission at all. If a download needs your login, LinkUnzip says so and offers
+                  <b>Use my login on &lt;site&gt;</b>; your browser then asks you once for that one site.
+                </p>
+                <p>
+                  Only after that does the extension read that site's cookies, and only for the zip you chose. They go to
+                  the helper on your PC, which sends them only to that same site. Nothing is sent to the developer: there
+                  is no LinkUnzip server. Details in the <a href="privacy.html">privacy policy</a>.
+                </p>
+              </div>
+            </details>
+
+            <details class="card">
+              <summary>What doesn't it do?</summary>
+              <div class="answer">
+                <ul>
+                  <li>RAR and 7z, and creating archives.</li>
+                  <li>Password-protected zips (planned) and rare compression methods such as Deflate64, bzip2 or LZMA.</li>
+                  <li>Downloads that only exist inside a web page (<code>blob:</code> links, as in some web apps).</li>
+                  <li>Links that need a form POST or a one-time token.</li>
+                  <li>
+                    Saving disk space for the files themselves: the extracted files still need their room. LinkUnzip
+                    saves you the room the ZIP would take.
+                  </li>
+                </ul>
+                <p>When a link can't be read this way, <b>Download normally</b> hands it back to the browser.</p>
+              </div>
+            </details>
+
+            <details class="card">
+              <summary>What if the connection drops?</summary>
+              <div class="answer">
+                <p>
+                  The file being written starts again from its beginning; files already finished stay in the folder. If
+                  you stop a job, or it fails, <b>Resume</b> picks it up and skips every file that is already there and
+                  verified.
+                </p>
+                <p>
+                  In one-pass mode (GitHub's Download ZIP and other servers that can't send parts of a file), a dropped
+                  connection starts the pass again from the beginning of the zip, skipping files already done.
+                </p>
+              </div>
+            </details>
+
+            <details class="card">
+              <summary>Is it safe to extract archives from strangers?</summary>
+              <div class="answer">
+                <p>
+                  LinkUnzip treats every archive as untrusted. It refuses path tricks (<code>..</code>, absolute paths,
+                  drive letters), renames names Windows can't store and tells you, never writes more than a file's
+                  declared size, and stops before the disk fills up. It says which files it can't extract instead of
+                  skipping them silently.
+                </p>
+              </div>
+            </details>
+
+            <details class="card">
+              <summary>How do I remove it?</summary>
+              <div class="answer">
+                <p>
+                  Remove the extension from the browser, then open Windows Settings › Apps › Installed apps ›
+                  LinkUnzip › Uninstall. That removes the helper and its browser registration.
+                </p>
+              </div>
+            </details>
+
+            <details class="card">
+              <summary>Does it cost anything?</summary>
+              <div class="answer">
+                <p>No. No account, no ads, no tracking, and this website has no cookies or trackers either.</p>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <div class="foot">
+          <a class="brand" href="./"><img src="logo.svg" alt="" width="26" height="26" /><span>LinkUnzip</span></a>
+          <nav aria-label="Footer">
+            <a href="https://github.com/CincaAlex/LinkUnzip">GitHub</a>
+            <a href="https://github.com/CincaAlex/LinkUnzip/issues">Report a problem</a>
+            <a href="privacy.html">Privacy</a>
+            <a href="https://github.com/CincaAlex/LinkUnzip/blob/main/LICENSE">Licence</a>
+          </nav>
+        </div>
+        <p class="fine">This site sets no cookies and loads nothing from other servers.</p>
+      </div>
+    </footer>
+  </body>
+</html>

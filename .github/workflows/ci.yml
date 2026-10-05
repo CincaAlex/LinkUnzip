@@ -1,0 +1,65 @@
+# Checks every push and pull request: formatting, lints, the Rust tests and a syntax check of the
+# extension scripts. The browser end-to-end test (tools/e2e/extension.mjs) needs a 1 GB demo
+# archive and a real helper install, so it stays a local pre-release step (docs/release.md).
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+
+      # The tests generate their archives with Python scripts in tools/.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
+
+      - name: node --check (extension scripts)
+        run: |
+          $files = @(Get-ChildItem extension -Filter *.js) + @(Get-ChildItem tools\e2e -Filter *.mjs)
+          foreach ($f in $files) {
+            node --check $f.FullName
+            if ($LASTEXITCODE -ne 0) { Write-Error "syntax error in $($f.Name)"; exit 1 }
+          }
+          "checked $($files.Count) scripts"
+
+      - name: Python syntax (tools)
+        run: python -m py_compile (Get-ChildItem tools -Filter *.py).FullName

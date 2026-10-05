@@ -1,0 +1,276 @@
+/* The setup page: same zinc greys as popup.css and the same theme choice
+   (theme.js sets data-theme before the first paint; none = follow Windows). Text at least 4.5:1. */
+:root {
+  color-scheme: light;
+  --bg: #f4f4f5;
+  --surface: #ffffff;
+  --border: #e4e4e7;
+  --text: #09090b;
+  --muted: #52525b;
+  --accent: #18181b;
+  --accent-ink: #fafafa;
+  --accent-soft: rgba(9, 9, 11, 0.05);
+  --accent-line: rgba(9, 9, 11, 0.3);
+  --focus: #09090b;
+  --ok: #1b7343;
+  --warn: #8f5400;
+  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #18181b;
+    --surface: #27272a;
+    --border: #3f3f46;
+    --text: #fafafa;
+    --muted: #a1a1aa;
+    --accent: #fafafa;
+    --accent-ink: #09090b;
+    --accent-soft: rgba(250, 250, 250, 0.08);
+    --accent-line: rgba(250, 250, 250, 0.3);
+    --focus: #fafafa;
+    --ok: #7ad9a1;
+    --warn: #f0b46a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #18181b;
+  --surface: #27272a;
+  --border: #3f3f46;
+  --text: #fafafa;
+  --muted: #a1a1aa;
+  --accent: #fafafa;
+  --accent-ink: #09090b;
+  --accent-soft: rgba(250, 250, 250, 0.08);
+  --accent-line: rgba(250, 250, 250, 0.3);
+  --focus: #fafafa;
+  --ok: #7ad9a1;
+  --warn: #f0b46a;
+}
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 var(--sans);
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 16px 64px;
+}
+
+header {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 32px;
+}
+
+header img {
+  border-radius: 13px;
+  flex: none;
+}
+
+h1 {
+  margin: 0;
+  font-size: 26px;
+  letter-spacing: 0.01em;
+}
+
+h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+
+p {
+  margin: 0 0 10px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 13px;
+}
+
+b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+/* A step that is not reached yet: dimmed, but its text stays readable. */
+.step[data-state="todo"] h2 {
+  color: var(--muted);
+}
+.step[data-state="todo"] .mark {
+  opacity: 0.6;
+}
+
+.step[data-state="next"] {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mark {
+  width: 26px;
+  height: 26px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  display: grid;
+  place-items: center;
+  font: 700 14px/1 var(--sans);
+}
+
+.step[data-state="done"] .mark {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.step[data-state="done"] .mark::before {
+  content: "✓";
+}
+
+.step[data-state="next"] .mark {
+  border-color: var(--accent);
+}
+
+.step[data-state="checking"] .mark {
+  border-color: var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step[data-state="checking"] .mark {
+    animation: none;
+  }
+}
+
+.status {
+  font-weight: 600;
+}
+
+.detail {
+  font: 12px/1.4 var(--mono);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.step[data-state="done"] .status {
+  color: var(--ok);
+}
+.step[data-state="next"] .status {
+  color: var(--warn);
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0 12px;
+}
+
+.btn {
+  display: inline-block;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+button.btn {
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.btn:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.btn.primary:hover {
+  filter: brightness(1.08);
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.btn.primary:focus-visible {
+  outline-color: var(--text);
+}
+
+.btn.disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+details {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+summary {
+  cursor: pointer;
+}
+
+code {
+  display: block;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: 13px/1.4 var(--mono);
+  color: var(--accent);
+  user-select: all;
+}

@@ -1,0 +1,175 @@
+<!doctype html>
+<!--
+  Privacy policy page. The Chrome Web Store and Edge Add-ons listings point here
+  (https://linkunzip.app/privacy; GitHub Pages also serves this file at /privacy).
+
+  The policy text between the BEGIN/END markers is docs/privacy.md as HTML. Keep the "Limited
+  Use" paragraph: Google asks for it on the website of every extension that handles user data, and
+  the store's privacy answers must match this page.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy policy · LinkUnzip</title>
+    <meta name="description" content="What LinkUnzip does with your data: nothing leaves your PC except the requests to the server of the link you chose." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f5f8f8" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0f12" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="logo.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon-256.png" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <header class="wrap top">
+      <a class="brand" href="./" aria-label="LinkUnzip home">
+        <img src="logo.svg" alt="" width="32" height="32" />
+        <span>LinkUnzip</span>
+      </a>
+      <nav aria-label="Main">
+        <a class="opt" href="./#how">How it works</a>
+        <a href="./#faq">FAQ</a>
+        <a href="https://github.com/CincaAlex/LinkUnzip">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="main" class="wrap">
+      <article class="doc">
+        <h1>Privacy policy</h1>
+
+        <!-- BEGIN PRIVACY POLICY: generated from docs/privacy.md; edit that file, then copy it here -->
+        <p>Effective 5 October 2026. Applies to the LinkUnzip browser extension (Chrome, Edge, Brave and other
+        Chromium browsers) and the LinkUnzip helper program for Windows (<code>linkunzip.exe</code>), version 1.0 and
+        later.</p>
+        <p><strong>In short:</strong> LinkUnzip has no accounts, no analytics, no ads and no servers of its own. It does not
+        collect, sell or share any data about you. It connects only to the server of the link you chose,
+        and the files you extract stay on your disk.</p>
+        <h2>What happens when you extract a zip</h2>
+        <ol>
+        <li>You choose a link (right-click <em>Extract with LinkUnzip</em>, the toolbar popup, or a caught <code>.zip</code>
+           download).</li>
+        <li>The extension passes that link to the LinkUnzip helper on your own PC through the browser's
+           native messaging. Nothing goes to the LinkUnzip project or anyone else.</li>
+        <li>The helper connects to the server in that link and downloads only the parts of the zip it
+           needs. If that server redirects the download to another address (download mirrors and CDNs
+           often do), the helper follows it, as a browser would.</li>
+        <li>The helper writes the extracted files into the folder you chose. The zip itself is never saved.</li>
+        </ol>
+        <p>Along with the link, the extension may pass the address of the page where you found it and your
+        browser's name and version (the same <code>Referer</code> and <code>User-Agent</code> your browser sends for a normal
+        download), so that servers which check them still work.</p>
+        <h2>Your browser login (cookies)</h2>
+        <p>Some downloads only work when you are logged in to the site. For those, LinkUnzip can use your
+        browser's cookies for that one site, <strong>only if you allowed it</strong>:</p>
+        <ul>
+        <li>LinkUnzip asks the first time a download needs your login on a site (for example <em>Use my login
+          on example.com</em>). The browser shows its own permission prompt and remembers your answer for
+          that site.</li>
+        <li>In Settings you can instead allow <em>Use my login on every site</em>. It is off unless you turn it on.</li>
+        <li>With that permission, the extension reads the cookies for the link's site only, at the moment you
+          start, and passes them to the helper on your PC. The helper sends them only to that site, and
+          drops them if the download is redirected to a different site.</li>
+        <li>Cookies are never stored by LinkUnzip, never written to disk by it, and never sent anywhere else.</li>
+        </ul>
+        <p>Public links need no permission at all: without it, no cookies are read.</p>
+        <h2>What is stored, and where</h2>
+        <ul>
+        <li><strong>Settings</strong> (base folder, number of connections, login options, <em>Catch .zip downloads</em>): in the
+          browser's extension storage on your PC.</li>
+        <li><strong>The state of current jobs</strong> (link, folder, progress, file names) so the popup can show it: in
+          the browser's session storage, cleared when the browser closes.</li>
+        <li><strong>Extracted files</strong>: in the folder you chose. They are yours; LinkUnzip never uploads them.</li>
+        <li><strong>Resume information</strong>: while a job is unfinished, the helper keeps a small progress file
+          (<code>.linkunzip-resume.jsonl</code>) in the destination folder so it can skip finished files next time.
+          It is deleted when the job finishes.</li>
+        <li>The helper keeps no logs and no history.</li>
+        </ul>
+        <h2>Other things the extension can see</h2>
+        <ul>
+        <li><strong>ZIP links on the current page</strong>: when you open the toolbar popup, the extension looks at the
+          page you are on for links ending in <code>.zip</code> and lists them in the popup. Nothing is kept or
+          sent.</li>
+        <li><strong>Downloads</strong>: if you turn on <em>Catch .zip downloads</em> (off by default), the extension notices when
+          the browser starts downloading a <code>.zip</code>, cancels that download and offers it to LinkUnzip
+          instead. It does not look at other downloads.</li>
+        <li><strong>Copy details</strong>: after an error, this button copies the versions, Windows version, error code,
+          HTTP status, the host name and the technical error text to your clipboard. Web addresses are cut
+          down to their host name, so the full link is never included; for a disk error, the text can name
+          the file or folder on your PC that failed. It is sent nowhere; you decide whether to paste it
+          into a bug report.</li>
+        </ul>
+        <h2>The data the store listings name</h2>
+        <p>The Chrome Web Store and Edge Add-ons ask every extension which kinds of user data it handles,
+        even when the data never leaves the user's PC. By their definitions LinkUnzip handles three kinds,
+        all of them only on your PC:</p>
+        <ul>
+        <li><strong>Authentication information:</strong> a site's cookies, only after you allowed that site (see <em>Your
+          browser login</em> above). The extension passes them to the helper, which sends them only to that
+          site.</li>
+        <li><strong>Web history:</strong> the link you chose and the address of the page it was on, passed to the helper
+          so it can download the zip.</li>
+        <li><strong>Website content:</strong> the <code>.zip</code> links on the page you are on, read when you open the toolbar
+          popup so it can list them.</li>
+        </ul>
+        <p>Where any of it is kept is listed under <em>What is stored, and where</em> above. None of it reaches the
+        LinkUnzip project or anyone else.</p>
+        <h2>Connections LinkUnzip makes</h2>
+        <ul>
+        <li>The helper connects to the servers of the links you choose (and the addresses they redirect
+          to). Nothing else.</li>
+        <li>When you click <strong>Download</strong> on the extension's setup page, your browser downloads the helper's
+          installer from the project's GitHub releases page
+          (<a href="https://github.com/CincaAlex/LinkUnzip/releases">https://github.com/CincaAlex/LinkUnzip/releases</a>), under GitHub's own privacy policy.</li>
+        <li>No analytics, crash reporting, update checks or remote code. Updates to the extension come
+          through the browser's extension store.</li>
+        </ul>
+        <h2>Sharing and selling</h2>
+        <p>LinkUnzip does not sell, rent, share or transfer any data, does not use data for advertising or
+        credit decisions, and has no servers that could receive it.</p>
+        <h2>Removing everything</h2>
+        <ol>
+        <li>Remove the extension: <code>chrome://extensions</code> (or <code>edge://extensions</code>), LinkUnzip, <strong>Remove</strong>.
+           This deletes its settings, its job state and the site permissions you granted. (To withdraw
+           only the login permissions, turn off <em>Use my login on every site</em> in Settings, or remove sites
+           under the extension's <strong>Details</strong> page.)</li>
+        <li>Remove the helper: Windows <em>Settings &gt; Apps &gt; Installed apps</em>, <strong>LinkUnzip</strong>, <strong>Uninstall</strong>.
+           This deletes the program and its browser registrations. If you installed it from the command
+           line with <code>linkunzip host install</code>, run <code>linkunzip host uninstall</code> instead.</li>
+        <li>Extracted files stay where you put them until you delete them.</li>
+        </ol>
+        <h2>Changes</h2>
+        <p>If this policy changes, the new version is published here with a new date, and the change is
+        visible in the project's public history. A change that would collect or share data in a new way
+        would be announced in the release notes first.</p>
+        <h2>Contact</h2>
+        <p>Questions about this policy: open an issue at <a href="https://github.com/CincaAlex/LinkUnzip/issues">https://github.com/CincaAlex/LinkUnzip/issues</a>.
+        Security problems: report them privately at
+        <a href="https://github.com/CincaAlex/LinkUnzip/security/advisories/new">https://github.com/CincaAlex/LinkUnzip/security/advisories/new</a>.</p>
+        <!-- END PRIVACY POLICY -->
+
+        <h2>Chrome Web Store User Data Policy</h2>
+        <p>
+          The use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy,
+          including the Limited Use requirements.
+        </p>
+      </article>
+    </main>
+
+    <footer>
+      <div class="wrap">
+        <div class="foot">
+          <a class="brand" href="./"><img src="logo.svg" alt="" width="26" height="26" /><span>LinkUnzip</span></a>
+          <nav aria-label="Footer">
+            <a href="https://github.com/CincaAlex/LinkUnzip">GitHub</a>
+            <a href="https://github.com/CincaAlex/LinkUnzip/issues">Report a problem</a>
+            <a href="privacy.html">Privacy</a>
+            <a href="https://github.com/CincaAlex/LinkUnzip/blob/main/LICENSE">Licence</a>
+          </nav>
+        </div>
+        <p class="fine">This site sets no cookies and loads nothing from other servers.</p>
+      </div>
+    </footer>
+  </body>
+</html>
