@@ -50,10 +50,11 @@ class Cp437Info(zipfile.ZipInfo):
 
     Python normally writes any non-ASCII name as UTF-8 (+ bit 11). Old DOS-era tools wrote CP437;
     this reproduces that so we can test the CP437 decoder against a real archive.
+    Python 3.14 sets bit 11 on every entry it opens for writing, so it has to be cleared here.
     """
 
     def _encodeFilenameFlags(self):
-        return self.filename.encode("cp437"), self.flag_bits
+        return self.filename.encode("cp437"), self.flag_bits & ~0x800
 
 
 class Unseekable(io.RawIOBase):
