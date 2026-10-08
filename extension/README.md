@@ -23,7 +23,7 @@ streams every file into a folder. The zip itself is never saved.
    `%LOCALAPPDATA%\linkunzip\` and writes the same registry values (last one wins);
    `linkunzip host status` shows where they point.
 
-2. **The extension.** Until it is in the Chrome Web Store: open `chrome://extensions`, switch on
+2. **The extension.** To run it from source: open `chrome://extensions`, switch on
    **Developer mode**, click **Load unpacked** and pick the `extension` folder of this project. It has
    a fixed id (`mgmhodmhlmedihmpiofacdffdekaehhk`, from the `key` in `manifest.json`), which is the id
    the host manifest allows. On first install it opens a setup page that shows whether the helper is

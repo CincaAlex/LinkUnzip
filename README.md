@@ -80,8 +80,9 @@ helper for you.
 
 ### 1. Add the extension
 
-The Chrome Web Store and Edge Add-ons listings are waiting for review; the links will be here once
-they are approved. Until then you can [run it from source](#build-from-source).
+Add LinkUnzip from the [Chrome Web Store](https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica). Edge, Brave and Chromium can
+install it from there too (in Edge, click **Allow extensions from other stores** when it asks).
+The Edge Add-ons listing will follow. You can also [run it from source](#build-from-source).
 
 ### 2. Install the helper
 
