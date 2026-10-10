@@ -14,6 +14,7 @@
   --border-strong: #d4d4d8;
   --text: #09090b;
   --muted: #52525b;
+  --muted-on-2: #52525b; /* muted text on --surface-2 */
   --accent: #09090b;
   --accent-strong: #18181b;
   --accent-ink: #fafafa;
@@ -54,6 +55,7 @@
     --border-strong: #52525b;
     --text: #fafafa;
     --muted: #a1a1aa;
+    --muted-on-2: #d4d4d8;
     --accent: #fafafa;
     --accent-strong: #fafafa;
     --accent-ink: #09090b;
@@ -87,6 +89,7 @@
   --border-strong: #52525b;
   --text: #fafafa;
   --muted: #a1a1aa;
+  --muted-on-2: #d4d4d8;
   --accent: #fafafa;
   --accent-strong: #fafafa;
   --accent-ink: #09090b;
@@ -1032,6 +1035,30 @@ body.settings-open #actions-slot {
 .verified {
   color: var(--ok);
   font-weight: 600;
+}
+/* The one-time rating question, a grey box at the top of the Done view. */
+.rate {
+  display: grid;
+  gap: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.rate p {
+  margin: 0;
+}
+.rate b {
+  font-weight: 600;
+}
+.rate button.link:not(.quiet) {
+  font-weight: 600;
+}
+/* On the grey box the usual muted grey is too faint in dark mode. */
+.rate button.link.quiet {
+  color: var(--muted-on-2);
 }
 .zero-line {
   display: flex;

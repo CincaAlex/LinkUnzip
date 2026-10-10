@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "LinkUnzip: リンクからZIPファイルを直接展開"
+  },
+  "extDescription": {
+    "message": "ZIPを保存せずに、リンクから直接フォルダへ展開します。すべてのファイルを検証します。Windows用で、無料の小さな補助アプリを使います。"
+  }
+}

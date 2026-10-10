@@ -17,6 +17,25 @@ function olderVersion(a, b) {
   return false;
 }
 
+// The store's reviews page, offered once on the Done screen after RATE_AFTER extractions in
+// which every file was verified. The count stays on this PC, in chrome.storage.local.
+export const REVIEW_URL = "https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica/reviews";
+export const RATE_AFTER = 3;
+
+/**
+ * Counts one finished extraction. `rate` is what chrome.storage.local holds ({ good, asked }, or
+ * nothing yet); returns what to store next and whether this job's Done screen asks.
+ */
+export function rateCheck(rate, result) {
+  const good = rate?.good || 0;
+  const asked = Boolean(rate?.asked);
+  // verified_files also counts files a resumed run found already in place, so it can be larger.
+  const verified = result?.files > 0 && result.verified_files >= result.files;
+  if (!verified) return { rate: { good, asked }, ask: false };
+  const ask = !asked && good + 1 >= RATE_AFTER;
+  return { rate: { good: good + 1, asked: asked || ask }, ask };
+}
+
 /** Whether this helper (`hello` reply) is older than the extension wants. */
 export function helperNeedsUpdate(info) {
   if (!info) return false;

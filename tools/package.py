@@ -6,6 +6,10 @@
     dist/SHA256SUMS.txt                 checksums of both, in `sha256sum -c` format
 
     python tools/package.py [--skip-build]
+    python tools/package.py --extension-only
+
+--extension-only builds just the store zip, named after the version in extension/manifest.json,
+for an update that changes nothing in the helper (no new installer, no tag; see docs/release.md).
 
 The extension IDs allowed to talk to the program are the development ID (derived from the "key"
 in extension/manifest.json) plus any in LINKUNZIP_EXTRA_IDS (comma separated), e.g. the Chrome
@@ -203,6 +207,12 @@ def main():
     version = cargo_version()
     with open(os.path.join(EXT, "manifest.json"), encoding="utf-8") as fh:
         ext_manifest = json.load(fh)
+    if "--extension-only" in sys.argv:
+        os.makedirs(DIST, exist_ok=True)
+        ext_zip = store_zip(ext_manifest["version"])
+        print(f"LinkUnzip extension {ext_manifest['version']} (helper stays {version})")
+        describe(ext_zip)
+        return
     if ext_manifest["version"] != version:
         sys.exit(f"extension/manifest.json is version {ext_manifest['version']}, Cargo.toml is {version}")
     ids = [extension_id(ext_manifest["key"])]

@@ -693,7 +693,53 @@ async function stubbedViews(browser) {
     "the done view says all files were verified, which were skipped, and how much was the index",
   );
   await shot(p, "17-done-verified");
+  const noRate = !(await p.$(".rate"));
+  // The counting rule: only fully verified jobs count, the third one asks, and only once.
+  const rule = await p.evaluate(async () => {
+    const { rateCheck } = await import(chrome.runtime.getURL("config.js"));
+    const ok = { files: 5, verified_files: 5 };
+    const asks = [];
+    let rate;
+    // A resumed run: 5 extracted plus 3 already in the folder, all verified, so it counts.
+    const resumed = { files: 5, verified_files: 8 };
+    for (const r of [ok, { files: 5, verified_files: 4 }, resumed, { files: 0, verified_files: 3 }, ok, ok, ok]) {
+      const next = rateCheck(rate, r);
+      asks.push(next.ask);
+      rate = next.rate;
+    }
+    return { asks: asks.join(","), rate };
+  });
   await p.close();
+  check(
+    noRate && rule.asks === "false,false,false,false,true,false,false" && rule.rate.good === 5 && rule.rate.asked,
+    `the rating line: counts only fully verified jobs, asks on the third, never again (${rule.asks})`,
+  );
+
+  // The rating line itself: "No thanks" and "Rate it" both remove it and tell the background.
+  const answers = {};
+  for (const label of ["No thanks", "Rate it"]) {
+    p = await openStubbedPopup(browser, { session: session({ ...finished, askRate: true }, HOST_INFO_V2) });
+    await p.waitForSelector(".rate");
+    if (label === "No thanks") await shot(p, "17b-done-rate");
+    await clickButton(p, label);
+    answers[label] = {
+      sent: await p.evaluate(() => window.__sent.find((m) => m.cmd === "rate")),
+      gone: !(await p.$(".rate")),
+    };
+    await p.close();
+  }
+  // In real use the Done view is already on screen when the background decides to ask.
+  p = await openStubbedPopup(browser, { session: session(finished, HOST_INFO_V2) });
+  await p.waitForSelector(".zero-line");
+  await p.evaluate((job) => window.__emit({ jobs: { newValue: { [job.id]: job } } }), { ...finished, askRate: true });
+  const lateRate = await p.waitForSelector(".rate", { timeout: 2000 }).then(() => true, () => false);
+  await p.close();
+  check(lateRate, "the rating line appears on a Done view that is already open");
+  check(
+    answers["No thanks"].gone && answers["No thanks"].sent?.open === false && answers["No thanks"].sent?.id === "j-done" &&
+      answers["Rate it"].gone && answers["Rate it"].sent?.open === true,
+    "the rating line goes away on either answer; only Rate it opens the store",
+  );
 
   // A protocol-1 helper: no Browse... anywhere, the update card instead ("Later" puts it away).
   p = await openStubbedPopup(browser, { session: session(failedJob("no_range"), HOST_INFO_V1) });
@@ -966,6 +1012,7 @@ async function themes(browser, session) {
     // Resumed: 12 files were already there, so the bar starts past them, not at 0 %.
     ["extracting-resumed", session({ ...readyJob(), phase: "extracting", progress: { ...progress, downloaded: 0.2 * GB, total_compressed: 0.48 * GB, files_done: 3, total_files: 12, skipped_files: 12, skipped_compressed: 0.4 * GB, skipped_extracted: 0.55 * GB } }, HOST_INFO_V2)],
     ["done", session({ ...readyJob(), phase: "done", lastExtract: {}, result: { type: "done", output: "C:\\Users\\me\\Downloads\\LinkUnzip\\big", files: 24, dirs: 3, extracted_bytes: 1.2 * GB, downloaded_bytes: 0.7 * GB, archive_size: 0.9 * GB, normal_needs: 2.1 * GB, elapsed_ms: 42000, retries: 1, requests: 31, zip_bytes_on_disk: 0, renamed: 2, stream: false, verified_files: 24, skipped_existing: 3, skipped_bytes: 0.1 * GB, index_bytes: 12.5 * 1024 ** 2 } }, HOST_INFO_V2)],
+    ["done-rate", session({ ...readyJob(), phase: "done", askRate: true, lastExtract: {}, result: { type: "done", output: "C:\\Users\\me\\Downloads\\LinkUnzip\\big", files: 24, dirs: 3, extracted_bytes: 1.2 * GB, downloaded_bytes: 0.7 * GB, archive_size: 0.9 * GB, normal_needs: 2.1 * GB, elapsed_ms: 42000, retries: 0, requests: 31, zip_bytes_on_disk: 0, renamed: 0, stream: false, verified_files: 24, skipped_existing: 0, skipped_bytes: 0, index_bytes: 1024 ** 2 } }, HOST_INFO_V2)],
     ["stopped", session({ ...readyJob(), phase: "cancelled", lastExtract: {}, result: { output: "C:\\x", files_done: 7 } }, HOST_INFO_V2)],
     ["error-login", session(failedJob("needs_login"), HOST_INFO_V1)],
     ["error-no-range", session(failedJob("no_range"), HOST_INFO_V2)],

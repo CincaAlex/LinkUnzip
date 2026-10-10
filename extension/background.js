@@ -4,6 +4,7 @@
 // the state of every job in chrome.storage.session so the popup can redraw it at any time, and
 // reacts to the right-click menu and (optionally) to .zip downloads.
 
+import { REVIEW_URL, rateCheck } from "./config.js";
 import { fileNameFromUrl, folderNameFor, humanBytes, joinPath, sitePattern } from "./fmt.js";
 import { loadSettings, migrate } from "./settings.js";
 
@@ -243,6 +244,7 @@ function onHostMessage(msg) {
       job.result = msg;
       finishBadge("✓", "#2f9e6f");
       notifyDone(job);
+      countForRating(job);
       break;
     case "cancelled":
       job.phase = "cancelled";
@@ -260,6 +262,18 @@ function onHostMessage(msg) {
       break;
   }
   persist();
+}
+
+// One question, ever: after the third extraction where every file checked out, that job's Done
+// screen asks for a store rating (rateCheck in config.js).
+async function countForRating(job) {
+  const { rate } = await chrome.storage.local.get("rate");
+  const next = rateCheck(rate, job.result);
+  await chrome.storage.local.set({ rate: next.rate });
+  if (next.ask) {
+    job.askRate = true;
+    persist();
+  }
 }
 
 function fail(job, error) {
@@ -564,6 +578,17 @@ const commands = {
     const { current } = await chrome.storage.session.get("current");
     if (current === id) await chrome.storage.session.remove("current");
     persist();
+    return { ok: true };
+  },
+  // The rating line on the Done screen: either answer puts it away for good.
+  async rate({ id, open }) {
+    await ready;
+    const job = jobs.get(id);
+    if (job) {
+      job.askRate = false;
+      persist();
+    }
+    if (open) await chrome.tabs.create({ url: REVIEW_URL });
     return { ok: true };
   },
   async downloadNormally({ url }) {

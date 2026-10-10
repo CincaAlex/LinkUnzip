@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "LinkUnzip: extraia arquivos ZIP direto de links"
+  },
+  "extDescription": {
+    "message": "Extrai um ZIP de um link direto para uma pasta, sem salvar o ZIP. Cada arquivo verificado. Windows, com um app auxiliar gratuito."
+  }
+}

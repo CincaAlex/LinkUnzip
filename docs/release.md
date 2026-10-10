@@ -133,6 +133,28 @@ Upload the release's `linkunzip-extension-X.Y.Z.zip` in the Chrome Web Store dev
 and in Edge Partner Center, then submit it for review. Say LinkUnzip is in a store only once that
 listing is approved.
 
+## Extension-only updates
+
+When only `extension/` changes (texts, translations, popup fixes that need nothing new from the
+helper), skip the tag and the GitHub Release: a new installer would be a new unsigned file that
+SmartScreen knows nothing about.
+
+1. Bump only `extension/manifest.json` and add a `## X.Y.Z - YYYY-MM-DD (extension only)` section
+   to the changelog.
+2. `python tools\package.py --extension-only` writes `dist\linkunzip-extension-X.Y.Z.zip`.
+3. Upload it in the store dashboards and submit it for review.
+
+The helper keeps its older version. The next full release takes a version above both, so the two
+match again.
+
+## Store listing languages
+
+The store shows a listing language only if the package has a matching `extension/_locales/<code>`
+folder. Each `messages.json` holds `extName` (75 characters at most) and `extDescription` (132),
+which become the store name and summary in that language. The rest of the extension is in English
+only. The long description and screenshots for each language are entered in the dashboard: pick
+the language at the top of the Store listing tab.
+
 ## The store IDs and the helper
 
 The helper only answers extension IDs listed in its registration: the development ID plus

@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "LinkUnzip: ZIP-Dateien direkt aus Links entpacken"
+  },
+  "extDescription": {
+    "message": "Entpackt ein ZIP von einem Link direkt in einen Ordner, ohne es zu speichern. Jede Datei geprüft. Windows, mit Gratis-Hilfsprogramm."
+  }
+}

@@ -2,9 +2,18 @@
 
 All notable changes to LinkUnzip. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/). The helper (`linkunzip.exe`) and
-the extension always share one version number.
+the extension share one version number; an update to the extension alone skips the helper, which
+keeps its older version until the next full release.
 
 ## Unreleased
+
+## 1.0.1 - 2026-10-10 (extension only)
+
+### Added
+- The store name and summary in German, Spanish, French, Italian, Japanese, Brazilian Portuguese
+  and Romanian. The extension itself is still in English.
+- After the third extraction in which every file was verified, the Done screen asks once for a
+  store rating. "Rate it" or "No thanks" removes it for good. The count stays on your PC.
 
 ## 1.0.0 - 2026-10-05
 

@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "LinkUnzip: extract ZIP files straight from links",
+    "description": "Extension name in the store and on chrome://extensions. Max 75 characters."
+  },
+  "extDescription": {
+    "message": "Extract a ZIP from a link straight into a folder without saving the ZIP. Every file checked. Windows, with a small free helper app.",
+    "description": "Store summary. Max 132 characters."
+  }
+}

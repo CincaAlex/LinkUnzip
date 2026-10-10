@@ -154,7 +154,8 @@ function currentJob() {
 function render() {
   renderChip();
   const job = currentJob();
-  const sig = job ? `${job.id}:${job.phase}` : "pick";
+  // The rating line is decided just after the job is done, so it redraws the Done view too.
+  const sig = job ? `${job.id}:${job.phase}${job.askRate ? ":rate" : ""}` : "pick";
   if (sig === drawn) {
     if (updater && job) updater(job);
     return;
@@ -689,6 +690,7 @@ function doneView(job) {
         : `✓ ${files(r.verified_files)} verified`;
   show(
     panel(
+      job.askRate ? rateLine(job) : null,
       h("div", { class: "hero" }, h("div", { class: "tick", "aria-hidden": "true" }, "✓"), h("h1", {}, `Extracted ${files(r.files)}`), h("p", { class: "muted" }, `in ${humanDuration(r.elapsed_ms)} · ${humanBytes(r.extracted_bytes)} written`)),
       verified ? h("p", { class: "verified" }, verified, h("span", { class: "muted small" }, " (size and CRC-32 checked)")) : null,
       r.skipped_existing > 0
@@ -707,6 +709,26 @@ function doneView(job) {
     ),
     actionBar([h("button", { class: "btn primary", onclick: () => send("reveal", { path: r.output }) }, "Open folder"), dismissBtn("Extract another")]),
   );
+}
+
+/** Asked once, ever (rateCheck in config.js). Either answer removes it for good. */
+function rateLine(job) {
+  const answer = (open) => {
+    line.remove();
+    send("rate", { id: job.id, open });
+  };
+  const line = h(
+    "div",
+    { class: "rate", role: "note" },
+    h("p", {}, h("b", {}, "Worked well?"), " A rating on the Chrome Web Store helps other people find LinkUnzip."),
+    h(
+      "div",
+      { class: "row" },
+      h("button", { class: "link", onclick: () => answer(true) }, "Rate it"),
+      h("button", { class: "link quiet", onclick: () => answer(false) }, "No thanks"),
+    ),
+  );
+  return line;
 }
 
 /** Resume a stopped or failed extraction: only helpers with `resume` skip what is already there. */
