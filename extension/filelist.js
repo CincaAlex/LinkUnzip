@@ -304,6 +304,9 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
         item.unsupported ? h("span", { class: "fl-tag", title: "LinkUnzip can't extract this file" }, item.unsupported) : null,
       ),
       h("span", { class: "fl-size" }, size),
+      !item.dir && features.preview && !item.unsupported
+        ? h("button", { type: "button", class: "fl-peek", tabindex: "-1", title: `Preview ${item.name}`, "aria-label": `Preview ${item.name}`, onclick: () => api.preview(item.path) })
+        : null,
     );
   }
 

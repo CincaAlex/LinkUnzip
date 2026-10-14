@@ -7,6 +7,41 @@ keeps its older version until the next full release.
 
 ## Unreleased
 
+### 1.1.0 (extension only, in testing)
+
+### Added
+- LinkUnzip works without the helper: the extension reads the index, downloads only the parts it
+  needs, inflates, checks every file (size and CRC-32) and saves it. Same rules as the helper for
+  unsafe names, renames, zip bombs and resume. Works wherever Chrome does, not only on Windows.
+- **Downloads by default**: files go into Downloads/<zip name> through Chrome's own downloads,
+  with nothing to pick or allow, straight from the toolbar popup. Chrome's download list stays
+  quiet while LinkUnzip works and keeps no entries. Chrome saves about 6 to 10 files a second this
+  way, so for zips with thousands of files the popup suggests a folder you choose instead
+  (Settings > Save extracted files to > A folder I choose), which is much faster. Names Chrome's
+  downloads refuse (`.gitignore`, names with `~`, `desktop.ini`, `.lnk`) get a `_` and are listed.
+- **Preview**: the eye at the end of a file row opens the file in a LinkUnzip tab without
+  extracting it: text and code (the first 256 KB, then Load more), CSV as a table (first 1,000
+  rows), images, PDF, audio and video. HTML is shown as source. Previous / Next (or the arrow keys)
+  walk the folder.
+- Settings: **Read zip links on every site** (one Chrome permission instead of one per site).
+
+### Changed
+- A folder you choose (welcome page, Settings, or Change... next to the folder) works for every
+  zip or for one: each zip goes into its own subfolder of it. Chrome doesn't let extensions pick
+  Downloads, Desktop or Documents themselves, only folders inside them. The popup shows the
+  folder's name; Chrome doesn't tell extensions the full path.
+- Logins: the browser sends its own cookies for the zip's site, only when you allowed it for that
+  site (or in Settings for every site). They no longer go to a helper program.
+- The helper is optional: it is still used for servers that can't send parts of a file (stream
+  mode) and for Open folder on its own jobs.
+
+### Not in the browser version yet
+- Free space on the drive (browsers don't tell extensions); a full disk still ends with the "Not
+  enough free space" screen.
+- Open folder after an extraction into a folder you chose (into Downloads, Open Downloads opens
+  the Downloads folder).
+- Servers without Range support (GitHub's "Download ZIP") without the helper.
+
 ## 1.0.1 - 2026-10-10 (extension only)
 
 ### Added

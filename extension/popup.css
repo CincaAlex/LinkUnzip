@@ -547,7 +547,7 @@ body.fill .fl-scroll {
 }
 .fl-row {
   display: grid;
-  grid-template-columns: 16px 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px 16px minmax(0, 1fr) auto 22px;
   align-items: center;
   gap: 9px;
   min-height: 28px;
@@ -616,6 +616,25 @@ button.fl-name.dir:hover {
 }
 .fl-row.off .fl-size {
   color: var(--muted);
+}
+/* Preview: an eye at the end of each file row, quiet until the row is hovered or focused */
+.fl-peek {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  background: var(--muted);
+  opacity: 0.55;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'%3E%3Cpath fill='none' stroke='black' stroke-width='1.4' d='M3 11s3-5.5 8-5.5S19 11 19 11s-3 5.5-8 5.5S3 11 3 11z'/%3E%3Ccircle cx='11' cy='11' r='2.4' fill='black'/%3E%3C/svg%3E") center / 18px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'%3E%3Cpath fill='none' stroke='black' stroke-width='1.4' d='M3 11s3-5.5 8-5.5S19 11 19 11s-3 5.5-8 5.5S3 11 3 11z'/%3E%3Ccircle cx='11' cy='11' r='2.4' fill='black'/%3E%3C/svg%3E") center / 18px no-repeat;
+}
+.fl-row:hover .fl-peek,
+.fl-row:focus-within .fl-peek,
+.fl-peek:focus-visible {
+  opacity: 1;
+  background: var(--text);
 }
 .fl-tag {
   justify-self: start;
@@ -728,6 +747,30 @@ details.advanced[open] > summary {
 }
 .path-row:has(> button.browse[hidden]) {
   grid-template-columns: 1fr;
+}
+/* The chosen folder: Chrome only tells the extension the folder's own name, not its full path */
+.folder-row {
+  align-items: center;
+}
+.folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text);
+}
+.folder-more {
+  display: flex;
+  justify-content: flex-end;
+}
+.folder-more:not(:has(> :not([hidden]))) {
+  display: none;
+}
+.notice button.link {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
 }
 .field.inline {
   grid-template-columns: 1fr 80px;
@@ -1248,8 +1291,14 @@ fieldset.choice legend {
   border-radius: 8px;
   overflow: hidden;
 }
+.segmented.two {
+  grid-template-columns: repeat(2, 1fr);
+}
 .segmented label {
   position: relative;
+}
+#set-save-note {
+  margin: 6px 0 0;
 }
 .segmented input {
   position: absolute;

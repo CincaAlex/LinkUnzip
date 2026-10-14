@@ -1,35 +1,38 @@
-// LinkUnzip popup. All the real work happens in background.js and in the native LinkUnzip
-// program; this page only shows the state of the current job and sends commands.
+// LinkUnzip popup. All the real work happens in background.js and the engine it runs; this page
+// only shows the state of the current job and sends commands.
 //
 // Names, paths and messages come from archives and servers we do not control, so everything is
 // put on the page with textContent (via h()), never innerHTML.
 
-import { helperNeedsUpdate } from "./config.js";
 import { h } from "./dom.js";
 import { fileList } from "./filelist.js";
+import { askFolderPermission, folderPermission, getFolder, pickFolder as showFolderPicker, setFolder } from "./folder.js";
 import { clock, fileNameFromUrl, hostOf, humanBytes, humanDuration, sitePattern } from "./fmt.js";
 import { ALL_SITES, DEFAULT_SETTINGS, applyTheme, effectiveTheme, loadSettings } from "./settings.js";
 
 const view = document.getElementById("view");
-if (new URLSearchParams(location.search).has("window")) document.body.classList.add("window-mode");
+const windowMode = new URLSearchParams(location.search).has("window");
+if (windowMode) document.body.classList.add("window-mode");
 
-let st = { jobs: {}, current: null, hostInfo: null, hostError: null };
+// hostInfo: the engine's hello (what it can do); helperInfo: the Windows helper's, if installed.
+let st = { jobs: {}, current: null, hostInfo: null, hostError: null, helperInfo: null };
 let settings = { ...DEFAULT_SETTINGS };
-// What the user typed or chose for each job, so neither a redraw nor closing the popup loses it
-// (the toolbar popup closes whenever the Windows folder picker takes focus).
+// What the user typed or chose for each job, so neither a redraw nor closing the popup loses it.
 let drafts = {};
 let drawn = ""; // which job/phase is on screen
 let updater = null; // redraws the live numbers of the current view without rebuilding it
-let updateLater = false; // "Later" on the helper update card, until the browser restarts
 
 const send = (cmd, data = {}) => chrome.runtime.sendMessage({ cmd, ...data });
 
-/** What the installed helper can do (`hello.features`); older helpers list nothing. */
+/** What the engine can do (`hello.features`). */
 const hasFeature = (name) => Boolean(st.hostInfo?.features?.includes(name));
 
 function draftFor(job) {
-  // The background may have stored only a folder picked while the popup was closed.
-  return (drafts[job.id] = { output: job.output || "", include: "", force: false, ...drafts[job.id] });
+  const d = (drafts[job.id] = { include: "", force: false, ...drafts[job.id] });
+  // The folder lives in the job (the background keeps it when Settings or a pick change it).
+  d.output = job.output || "";
+  d.target = job.target || null;
+  return d;
 }
 
 let draftTimer = null;
@@ -75,66 +78,224 @@ function actionBar(buttons, links = []) {
 // ---------------------------------------------------------------------------------------
 
 async function loadState() {
-  const s = await chrome.storage.session.get(["jobs", "current", "hostInfo", "hostError", "drafts", "reopen", "updateLater"]);
-  updateLater = Boolean(s.updateLater);
+  const s = await chrome.storage.session.get(["jobs", "current", "engineInfo", "hostInfo", "drafts", "pendingExtract"]);
   st = {
     jobs: s.jobs || {},
     current: s.current || null,
-    hostInfo: s.hostInfo || null,
-    hostError: s.hostError || null,
+    hostInfo: s.engineInfo || null,
+    hostError: null,
+    helperInfo: s.hostInfo || null,
   };
   drafts = s.drafts || {};
   settings = await loadSettings();
-  // Reopened by the background after the folder picker: go back to where the user was.
-  if (s.reopen) chrome.storage.session.remove("reopen");
-  return s.reopen || null;
+  return s.pendingExtract || null;
 }
 
-/**
- * Show the Windows folder picker through the helper. The background keeps the answer (in the
- * job's draft or the settings) and reopens the popup if the dialog closed it; when this popup is
- * still open, the reply updates the field right here. null = cancelled.
- */
-async function pickFolder(field, start, jobId) {
+// ---------------------------------------------------------------------------------------
+// Folders
+// ---------------------------------------------------------------------------------------
+//
+// Two places files can go:
+//
+// * Downloads (the default): Chrome's own downloads save every file into Downloads/<zip name>.
+//   Nothing to pick or allow, so it starts right in the toolbar popup. Chrome takes a moment per
+//   file, though, which zips with thousands of files notice (the popup says so before starting).
+// * A folder the user picked (File System Access): much faster per file. Chrome's folder picker
+//   and its "Let LinkUnzip edit files?" question take the focus, and the toolbar popup closes
+//   when it loses the focus. So both only ever appear in the LinkUnzip window, which stays open;
+//   the toolbar popup hands over to it. Those extractions also run with that window open: it
+//   shows the progress, and Chrome keeps a folder permission while a LinkUnzip window is open.
+
+const isDownloads = (target) => target?.key === "downloads";
+/** Files Chrome's downloads save per second (measured: 6 to 11 small files). */
+const DOWNLOADS_PER_SEC = 6;
+/** From this many seconds of saving on, the popup suggests a folder instead of Downloads. */
+const SLOW_SECS = 60;
+/** ".dll", ".dll and .ini", ".dll, .ini and .cfg" */
+const listWords = (words) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`);
+
+/** "about 2 minutes", "about 1 hour 20 minutes": an estimate, so no seconds. */
+function roughly(secs) {
+  const min = Math.max(1, Math.round(secs / 60));
+  if (min < 60) return `about ${min} ${min === 1 ? "minute" : "minutes"}`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `about ${h} ${h === 1 ? "hour" : "hours"}${m ? ` ${m} minutes` : ""}`;
+}
+
+const WINDOW_URL = chrome.runtime.getURL("popup.html");
+
+// The extraction the toolbar popup handed over to this window ({id, include, select, ...}).
+let pending = null;
+const pendingFor = (job) => (pending && job && pending.id === job.id ? pending : null);
+
+/** Open (or bring forward and reload) the LinkUnzip window with `query`, e.g. "&start=1". */
+async function openLinkUnzipWindow(query = "") {
   saveDrafts(true);
-  const r = await send("pickFolder", { field, start, jobId });
-  return r?.ok ? r.path : null;
+  const url = `${WINDOW_URL}?window=1${query}`;
+  const tabs = await chrome.runtime.getContexts({ contextTypes: ["TAB"] }).catch(() => []);
+  const open = tabs.find((c) => c.documentUrl?.startsWith(`${WINDOW_URL}?window=1`) && c.tabId >= 0);
+  if (open) {
+    await chrome.tabs.update(open.tabId, { url });
+    await chrome.windows.update(open.windowId, { focused: true });
+  } else {
+    await chrome.windows.create({ url, type: "popup", width: 460, height: 720 });
+  }
+  if (!windowMode) window.close();
+}
+
+/** Chrome's folder picker (window only). null when cancelled or refused (said in `problem`). */
+async function chooseFolder(problem) {
+  try {
+    return await showFolderPicker();
+  } catch (e) {
+    if (problem) {
+      problem.textContent = `Chrome didn't allow that folder: ${e.message}`;
+      problem.hidden = false;
+    }
+    return null;
+  }
+}
+
+/** Pick the folder every job goes into (Settings, or the first extraction). */
+async function chooseBaseFolder(problem) {
+  const handle = await chooseFolder(problem);
+  if (!handle) return null;
+  await setFolder("base", handle);
+  await send("baseFolderChanged");
+  return handle;
+}
+
+/** Pick a folder for this one job (window only). With no folder in Settings yet it goes there too. */
+async function chooseJobFolder(job, d, problem) {
+  const handle = await chooseFolder(problem);
+  if (!handle) return false;
+  await setFolder(`job:${job.id}`, handle);
+  if (!(await getFolder("base"))) await setFolder("base", handle);
+  const r = await send("jobFolder", { id: job.id, name: handle.name });
+  if (!r?.ok) return false;
+  d.target = r.target;
+  d.output = r.output;
+  return true;
+}
+
+/** Back to Downloads for this one job. */
+async function useDownloads(job, d) {
+  const r = await send("jobDownloads", { id: job.id });
+  if (!r?.ok) return false;
+  d.target = r.target;
+  d.output = r.output;
+  return true;
 }
 
 /**
- * A folder field: Browse... (when the helper can show the folder picker), then the text box.
- * `compact` keeps the label for screen readers only, as in the ready view's design.
+ * Window only, inside a click: a folder, and Chrome's OK to write there (Chrome asks again after
+ * the browser restarts). Returns the target, or null with `problem` saying why.
  */
-function folderField(label, d, jobId, { compact = false } = {}) {
-  const id = `folder-${jobId}`;
-  const input = h("input", { id, type: "text", value: d.output, spellcheck: "false", placeholder: "Choose a folder" });
-  input.addEventListener("input", () => {
-    d.output = input.value;
-    saveDrafts();
+async function readyFolder(job, d, problem) {
+  if (isDownloads(d.target)) return d.target;
+  if (!d.target && !(await chooseJobFolder(job, d, problem))) {
+    if (problem.hidden) {
+      problem.textContent = "Choose a folder to extract into.";
+      problem.hidden = false;
+    }
+    return null;
+  }
+  const handle = await getFolder(d.target.key);
+  if (!handle) {
+    d.target = null;
+    problem.textContent = "That folder is no longer known to LinkUnzip. Choose it again.";
+    problem.hidden = false;
+    return null;
+  }
+  if (!(await askFolderPermission(handle))) {
+    problem.textContent = `Chrome didn't let LinkUnzip save into ${handle.name}. Click the button again and choose Allow (or "Allow on every visit").`;
+    problem.hidden = false;
+    return null;
+  }
+  return d.target;
+}
+
+/** Can an extraction start right away, without the picker or one of Chrome's questions? */
+async function folderReady(d) {
+  if (isDownloads(d.target)) return true;
+  if (!d.target) return false;
+  const handle = await getFolder(d.target.key);
+  return Boolean(handle) && (await folderPermission(handle)) === "granted";
+}
+
+/**
+ * Start (or resume) an extraction. Into Downloads it starts right away; into a folder, the
+ * toolbar popup moves to the LinkUnzip window, which asks what Chrome needs and starts it there
+ * (see `pending` at the end of this file).
+ */
+async function startExtraction(job, d, request, problem) {
+  // The helper's one-pass mode writes where the helper decides: no folder to ask for.
+  if (request.stream) return send("extract", { ...request, id: job.id });
+  if (!windowMode && !isDownloads(d.target)) {
+    await chrome.storage.session.set({ pendingExtract: { ...request, id: job.id } });
+    await openLinkUnzipWindow("&start=1");
+    return;
+  }
+  problem.className = "notice bad";
+  problem.hidden = true;
+  const target = await readyFolder(job, d, problem);
+  if (!target) return;
+  pending = null;
+  await chrome.storage.session.remove("pendingExtract");
+  const res = await send("extract", { ...request, id: job.id, target, output: d.output });
+  if (res && !res.ok) {
+    problem.textContent = res.error;
+    problem.hidden = false;
+  }
+}
+
+/**
+ * Where the files go, Change... for this job (the picker opens in the window) and, for a folder,
+ * the way back to Downloads. `onChange` hears about a new place.
+ */
+function folderField(label, d, job, { compact = false, onChange = () => {} } = {}) {
+  const text = h("span", { class: "folder-name" });
+  const problem = h("p", { class: "notice bad", hidden: true });
+  const back = h("button", { class: "link small", type: "button" }, "Save to Downloads instead");
+  const showPlace = () => {
+    text.textContent = d.output || "No folder chosen yet";
+    text.title = d.output || "";
+    back.hidden = !d.target || isDownloads(d.target);
+  };
+  const change = h(
+    "button",
+    {
+      class: "btn browse",
+      type: "button",
+      "aria-label": `Choose the folder to ${label.toLowerCase()}`,
+      onclick: async () => {
+        if (!windowMode) return openLinkUnzipWindow("&change=1");
+        problem.hidden = true;
+        if (await chooseJobFolder(job, d, problem)) {
+          showPlace();
+          onChange();
+        }
+      },
+    },
+    "Change...",
+  );
+  back.addEventListener("click", async () => {
+    if (await useDownloads(job, d)) {
+      showPlace();
+      onChange();
+    }
   });
-  const browse = hasFeature("pick_folder")
-    ? h(
-        "button",
-        {
-          class: "btn browse",
-          type: "button",
-          "aria-label": `Browse for the folder to ${label.toLowerCase()}`,
-          onclick: async () => {
-            const path = await pickFolder("output", d.output.trim(), jobId);
-            if (path) {
-              d.output = input.value = path;
-              saveDrafts();
-            }
-          },
-        },
-        "Browse...",
-      )
-    : null;
+  showPlace();
+  const choosing = windowMode && new URLSearchParams(location.search).has("change");
   return h(
     "div",
     { class: "field" },
-    h("label", { for: id, class: compact ? "sr-only" : null }, label),
-    h("div", { class: "path-row" }, browse, input),
+    h("span", { class: compact ? "sr-only" : "label" }, label),
+    h("div", { class: "path-row folder-row" }, change, text),
+    h("div", { class: "folder-more" }, back),
+    choosing ? h("p", { class: "muted small" }, "Chrome doesn't let extensions pick Downloads, Desktop or Documents themselves: pick or make a folder inside one of them (Downloads > LinkUnzip, for example).") : null,
+    problem,
   );
 }
 
@@ -142,8 +303,8 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== "session") return;
   if (changes.jobs) st.jobs = changes.jobs.newValue || {};
   if ("current" in changes) st.current = changes.current.newValue || null;
-  if (changes.hostInfo) st.hostInfo = changes.hostInfo.newValue || null;
-  if (changes.hostError) st.hostError = changes.hostError.newValue || null;
+  if (changes.engineInfo) st.hostInfo = changes.engineInfo.newValue || null;
+  if (changes.hostInfo) st.helperInfo = changes.hostInfo.newValue || null;
   render();
 });
 
@@ -175,14 +336,11 @@ function render() {
   // The view's buttons go in their strip under the scrolling middle.
   const bar = view.querySelector(":scope > .actions");
   if (bar) slot.append(bar);
-  // Not while something is running: the card would only distract.
-  const card = !job || !["inspecting", "extracting"].includes(job.phase) ? updateCard() : null;
-  if (card) view.append(card);
   if (job && !first) announce(spokenState(job));
 }
 
 function statusText(job) {
-  if (!job) return st.hostError ? "Setup needed" : "Ready";
+  if (!job) return st.hostError ? "Engine stopped" : "Ready";
   const words = { inspecting: "Reading index...", ready: "Ready", extracting: "Extracting", done: "Done", cancelled: "Stopped" };
   return words[job.phase] || "Error";
 }
@@ -213,7 +371,7 @@ function spokenState(job) {
     case "inspecting":
       return `Reading the index of ${job.name}.`;
     case "ready":
-      return `${job.name}: ${r.files.toLocaleString()} files. Choose a folder, then Extract.`;
+      return `${job.name}: ${r.files.toLocaleString()} files. Tick what you want, then Extract.`;
     case "extracting":
       return `Extracting ${job.name}.`;
     case "done":
@@ -225,41 +383,16 @@ function spokenState(job) {
   }
 }
 
-/** A newer helper is available: say so once per browser session, without blocking anything. */
-function updateCard() {
-  if (updateLater || !helperNeedsUpdate(st.hostInfo)) return null;
-  const card = h(
-    "div",
-    { class: "card update", role: "note" },
-    h("p", {}, h("b", {}, "A newer LinkUnzip helper is available."), " It adds Browse..., choosing files and Resume. This one keeps working meanwhile."),
-    h(
-      "div",
-      { class: "row" },
-      h("button", { class: "link", onclick: () => openSetup("update") }, "Update the helper"),
-      h("button", {
-        class: "link quiet",
-        onclick: () => {
-          updateLater = true;
-          chrome.storage.session.set({ updateLater: true });
-          card.remove();
-        },
-      }, "Later"),
-    ),
-  );
-  return card;
-}
-
 function renderChip() {
-  document.getElementById("set-base-browse").hidden = !hasFeature("pick_folder");
   const chip = document.getElementById("host-chip");
-  const [state, word, title] = st.hostInfo
-    ? ["ok", "✓ Active", `LinkUnzip helper ${st.hostInfo.version} is connected`]
-    : st.hostError
-      ? ["bad", "✗ Not installed", "The LinkUnzip helper isn't connected"]
-      : ["unknown", "Connecting...", ""];
+  const [state, word, title] = st.hostError
+    ? ["bad", "✗ Stopped", st.hostError.message]
+    : st.hostInfo
+      ? ["ok", "✓ In browser", "LinkUnzip works right here in the browser: nothing to install"]
+      : ["unknown", "Starting...", ""];
   chip.dataset.state = state;
   chip.title = title;
-  chip.replaceChildren("Helper Status ", h("b", {}, word));
+  chip.replaceChildren("Engine ", h("b", {}, word));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -309,8 +442,8 @@ async function findZipLinks() {
 // Views
 // ---------------------------------------------------------------------------------------
 
-function openSetup(mode) {
-  chrome.tabs.create({ url: chrome.runtime.getURL(mode === "update" ? "welcome.html?update=1" : "welcome.html") });
+function openSetup() {
+  chrome.tabs.create({ url: chrome.runtime.getURL("welcome.html") });
   window.close();
 }
 
@@ -320,7 +453,7 @@ function hostBanner() {
     "div",
     { class: "card" },
     h("p", {}, st.hostError.message),
-    h("div", { class: "btn-row" }, h("button", { class: "btn primary", onclick: openSetup }, "Set up LinkUnzip")),
+    h("div", { class: "btn-row" }, h("button", { class: "btn", onclick: () => location.reload() }, "Try again")),
   );
 }
 
@@ -429,7 +562,7 @@ function costSection(r, m = null) {
       h("span", {}, "Zip on disk: ", h("b", {}, "0 B")),
       h("span", {}, "To download: ", h("b", {}, `~${humanBytes(download)}`)),
       h("span", {}, "Normal download: ", h("b", { class: "cmp-total" }, humanBytes(normal))),
-      h("span", {}, "Free space: ", h("b", {}, r.free == null ? "unknown" : humanBytes(r.free)), room),
+      r.free == null ? null : h("span", {}, "Free space: ", h("b", {}, humanBytes(r.free)), room),
     ),
   );
 }
@@ -456,6 +589,8 @@ function readyView(job) {
   // The button says what it will do: "Start Extraction (5,518 files, 925.6 MB)", "Filtered" once
   // only some files are ticked.
   const goLabel = () => {
+    // Sent here from the toolbar popup, and Chrome still has to ask something: one click.
+    if (windowMode && pendingFor(job) && !isDownloads(d.target)) return d.target ? "Allow and start extraction" : "Choose folder and start";
     const some = Boolean(d.include.trim()) || (selection && !selection.all);
     const verb = some ? "Start Filtered Extraction" : "Start Extraction";
     if (selection?.none || d.include.trim()) return verb;
@@ -463,29 +598,62 @@ function readyView(job) {
     return m ? `${verb} (${m.files.toLocaleString()} ${m.files === 1 ? "file" : "files"}, ${humanBytes(m.extracted)})` : verb;
   };
   const go = h("button", { class: "btn primary", id: "extract-btn" }, "Start Extraction");
+  // Into Downloads, say before it starts when Chrome will make it slow (thousands of files) or
+  // ask about files one by one (.dll, .ini, ...), and offer a folder instead.
+  const slow = h("p", { class: "notice slow-note", hidden: true });
+  // What the ticked files are (null while unknown: a pattern, or not measured yet).
+  const planned = () => {
+    if (d.include.trim()) return null;
+    if (!selection || selection.all) return r;
+    return selection.measured || null;
+  };
+  const updateSlow = () => {
+    const m = isDownloads(d.target) ? planned() : null;
+    const secs = m ? m.files / DOWNLOADS_PER_SEC : 0;
+    const many = secs >= SLOW_SECS;
+    const held = m?.held_back || 0;
+    slow.hidden = !many && !held;
+    if (slow.hidden) return;
+    const types = listWords((m.held_back_types || []).slice(0, 3).map((t) => `.${t}`));
+    const heldWhat = `${types} files until you click Keep on each one (${held.toLocaleString()} here)`;
+    const text = many
+      ? `${m.files.toLocaleString()} files: Chrome's downloads save about ${DOWNLOADS_PER_SEC} files a second, so saving them takes ${roughly(secs)}.${held ? ` Chrome also holds back ${heldWhat}.` : ""} A folder you choose is much faster${held ? " and doesn't ask" : " for this many files"}. `
+      : `Chrome's downloads hold back ${heldWhat}. A folder you choose doesn't ask. `;
+    slow.replaceChildren(text, h("button", { class: "link", type: "button", onclick: () => view.querySelector(".folder-row .btn")?.click() }, "Choose a folder..."));
+  };
   const updateGo = () => {
     go.disabled = Boolean(selection?.none) || (!fitsNow() && !d.force);
     go.textContent = goLabel();
+    updateSlow();
   };
   go.addEventListener("click", async () => {
-    const folder = d.output.trim();
-    problem.hidden = false;
-    if (!folder) return (problem.textContent = "Choose a folder to extract into.");
-    if (selection?.none) return (problem.textContent = "Tick at least one file to extract.");
     problem.hidden = true;
-    const res = await send("extract", {
-      id: job.id,
-      output: folder,
-      include: d.include.split(",").map((s) => s.trim()).filter(Boolean),
-      select: selection?.select,
-      connections: settings.connections,
-      force: !fitsNow() && d.force,
-    });
-    if (res && !res.ok) {
-      problem.textContent = res.error;
+    if (selection?.none) {
+      problem.textContent = "Tick at least one file to extract.";
       problem.hidden = false;
+      return;
     }
+    await startExtraction(
+      job,
+      d,
+      {
+        include: d.include.split(",").map((s) => s.trim()).filter(Boolean),
+        select: selection?.select,
+        connections: settings.connections,
+        force: !fitsNow() && d.force,
+      },
+      problem,
+    );
   });
+  // Sent here from the toolbar popup, and Chrome still has to ask something: say what.
+  if (windowMode && pendingFor(job) && !isDownloads(d.target)) {
+    go.textContent = goLabel();
+    problem.className = "notice";
+    problem.textContent = d.target
+      ? `Chrome needs your OK once to let LinkUnzip save into ${d.output.split(" > ")[0]}. Click the button, then Allow.`
+      : "Choose where to save: pick or make a folder inside Downloads (Chrome doesn't let extensions use Downloads itself).";
+    problem.hidden = false;
+  }
 
   // The Cost Analysis follows the ticked files once the helper has measured them; with nothing
   // ticked, or while measuring, it keeps what it showed.
@@ -549,11 +717,12 @@ function readyView(job) {
       ? fileList({
           job,
           draft: d,
-          features: { search: hasFeature("search"), measure: hasFeature("measure") },
+          features: { search: hasFeature("search"), measure: hasFeature("measure"), preview: hasFeature("preview") },
           api: {
             list: (dir, offset, limit) => send("list", { id: job.id, dir, offset, limit }),
             search: (query) => send("search", { id: job.id, query }),
             measure: (select) => send("measure", { id: job.id, select }),
+            preview: (path) => send("preview", { id: job.id, path }),
           },
           onChange: (sel) => {
             selection = sel;
@@ -580,7 +749,7 @@ function readyView(job) {
     h("button", { class: "btn", onclick: () => send("downloadNormally", { url: job.url }) }, "Download Normal ZIP (Fallback)"),
     h("button", { class: "btn cancel", onclick: () => send("dismiss", { id: job.id }) }, "Cancel"),
   ]);
-  bar.prepend(...[force, problem].filter(Boolean));
+  bar.prepend(...[force, slow, problem].filter(Boolean));
 
   // With the file list the panel fills the popup and the list takes the height that is left.
   if (chooser) document.body.classList.add("fill");
@@ -590,7 +759,13 @@ function readyView(job) {
       ? h("p", { class: "notice" }, `${r.unsupported} file(s) use encryption or a compression LinkUnzip cannot read (e.g. ${r.unsupported_sample[0].name}). ${chooser ? "Untick them or use" : "Use"} the filter to skip them.`)
       : null,
     filter,
-    folderField("Extract into", d, job.id, { compact: true }),
+    folderField("Extract into", d, job, {
+      compact: true,
+      onChange: () => {
+        problem.hidden = true;
+        updateGo();
+      },
+    }),
     bar,
   );
 }
@@ -613,6 +788,11 @@ function extractingView(job) {
   show(
     panel(
       h("p", { class: "path" }, `Into ${job.output}`),
+      isDownloads(job.target) && job.via !== "helper"
+        ? h("p", { class: "muted small" }, "Saving through Chrome's downloads (its download list stays quiet meanwhile). You can close this popup: LinkUnzip carries on.")
+        : windowMode && job.via !== "helper"
+          ? h("p", { class: "muted small" }, "Keep this window open until LinkUnzip is done. You can minimise it.")
+          : null,
       h("div", { class: "row", style: "justify-content:space-between" }, h("div", {}, h("h2", { style: "margin:0 0 4px" }, "Extracting"), refs.pct), h("div", { class: "spinner", "aria-hidden": "true" })),
       h("div", { class: "progress-bar", role: "progressbar", "aria-label": "Extraction progress", "aria-valuemin": "0", "aria-valuemax": "100" }, refs.bar),
       refs.sub,
@@ -666,6 +846,7 @@ function extractingView(job) {
     refs.now.textContent = p.active.length ? `now: ${p.active.join(", ")}${p.active_count > p.active.length ? ` (+${p.active_count - p.active.length} more)` : ""}` : " ";
     refs.zip.textContent = humanBytes(p.zip_on_disk);
     refs.extracted.textContent = humanBytes(p.extracted + skipped.extracted);
+    refs.free.parentElement.hidden = p.free == null;
     refs.free.textContent = p.free == null ? "?" : humanBytes(p.free);
     refs.freeLabel.textContent = `Free space${j.report?.drive ? ` on ${j.report.drive}` : ""}`;
   };
@@ -682,6 +863,7 @@ function doneView(job) {
   const saved = r.normal_needs - r.extracted_bytes;
   const files = (n) => `${n.toLocaleString()} ${n === 1 ? "file" : "files"}`;
   // Newer helpers say how many files they checked (size + CRC-32) and which were already there.
+  const intoDownloads = isDownloads(job.target) && job.via !== "helper";
   const verified =
     r.verified_files == null
       ? null
@@ -703,11 +885,52 @@ function doneView(job) {
         h("dt", {}, "A normal download needs"), h("dd", {}, humanBytes(r.normal_needs)),
         h("dt", {}, "Disk space saved"), h("dd", { class: "accent" }, humanBytes(saved)),
         r.retries ? h("dt", {}, "Network retries") : null, r.retries ? h("dd", {}, String(r.retries)) : null,
-        r.renamed ? h("dt", {}, "Renamed for Windows") : null, r.renamed ? h("dd", {}, `${r.renamed} files`) : null,
+        r.renamed ? h("dt", {}, intoDownloads ? "Renamed for Chrome" : "Renamed for Windows") : null, r.renamed ? h("dd", {}, `${r.renamed} files`) : null,
       ),
-      h("p", { class: "path" }, r.output),
+      r.renamed && r.renamed_sample?.length
+        ? h("p", { class: "muted small" }, `${intoDownloads ? "Chrome's downloads don't take some names, like .gitignore or names with ~, so they got a _" : "Names Windows can't store got a _"}: ${r.renamed_sample.map(([from, to]) => `${from} became ${to}`).join(", ")}${r.renamed > r.renamed_sample.length ? ", ..." : ""}`)
+        : null,
+      r.held > 0 ? heldNotice(r) : null,
+      h("p", { class: "path" }, `In ${r.output}`),
     ),
-    actionBar([h("button", { class: "btn primary", onclick: () => send("reveal", { path: r.output }) }, "Open folder"), dismissBtn("Extract another")]),
+    actionBar([
+      job.via === "helper" ? h("button", { class: "btn primary", onclick: () => send("reveal", { path: r.output }) }, "Open folder") : null,
+      intoDownloads ? h("button", { class: "btn primary", onclick: () => send("showDownloads") }, "Open Downloads") : null,
+      h("button", { class: job.via === "helper" || intoDownloads ? "btn" : "btn primary", onclick: () => send("dismiss", { id: st.current }) }, "Extract another"),
+    ]),
+  );
+}
+
+/**
+ * Files Chrome's downloads held back: it asks about types like .dll or .ini from any download, or
+ * a virus scan blocked one. Keep asks Chrome for each file in turn (one question per file).
+ */
+function heldNotice(r) {
+  const names = (r.held_sample || []).map((f) => f.name.split("/").pop());
+  const more = r.held > names.length ? ` and ${(r.held - names.length).toLocaleString()} more` : "";
+  const one = r.held === 1;
+  const status = h("p", { class: "small", style: "margin:6px 0 0", role: "status" });
+  const keep = h("button", { class: "link", type: "button" }, one ? "Keep it" : "Keep them");
+  keep.addEventListener("click", async () => {
+    keep.disabled = true;
+    let kept = 0;
+    for (const id of r.held_ids || []) {
+      const [item] = await chrome.downloads.search({ id }).catch(() => []);
+      if (!item || item.state !== "in_progress") continue;
+      // Chrome shows its own question for each file; nothing is kept without the user's click.
+      await chrome.downloads.acceptDanger(id).catch(() => {});
+      const [after] = await chrome.downloads.search({ id }).catch(() => []);
+      if (after && after.danger === "accepted") kept += 1;
+    }
+    status.textContent = `${kept.toLocaleString()} of ${r.held.toLocaleString()} kept.`;
+    keep.disabled = false;
+  });
+  return h(
+    "div",
+    { class: "notice" },
+    h("p", { style: "margin:0 0 6px" }, `Chrome held back ${one ? "1 file" : `${r.held.toLocaleString()} files`} until you say to keep ${one ? "it" : "them"}: ${names.join(", ")}${more}. ${one ? "It" : "They"} checked out (size and CRC-32); Chrome asks about files like these from any download.`),
+    h("div", { class: "row", style: "gap:14px" }, keep, h("button", { class: "link", type: "button", onclick: () => chrome.tabs.create({ url: "chrome://downloads" }) }, "Open Chrome's downloads")),
+    status,
   );
 }
 
@@ -734,9 +957,29 @@ function rateLine(job) {
 /** Resume a stopped or failed extraction: only helpers with `resume` skip what is already there. */
 const canResume = (job) => Boolean(job.lastExtract) && hasFeature("resume");
 
+/** In the window, after the toolbar popup handed over a Resume or Extract here: what's left. */
+function handoverNotice(job, d, button) {
+  if (!windowMode || !pendingFor(job)) return null;
+  return h(
+    "p",
+    { class: "notice" },
+    d.target
+      ? `Chrome needs your OK once to let LinkUnzip save into ${d.output.split(" > ")[0]}. Click ${button}, then Allow.`
+      : `Choose where to save, then click ${button}. Pick or make a folder inside Downloads (Chrome doesn't let extensions use Downloads itself).`,
+  );
+}
+
+/** The last extraction's settings, to run it again (Resume, Extract here). */
+function extractAgain(job) {
+  const { include, select, connections, force, stream } = job.lastExtract || {};
+  return { include, select, connections, force, stream };
+}
+
 function cancelledView(job) {
   const r = job.result || {};
   const resume = canResume(job);
+  const d = draftFor(job);
+  const problem = h("p", { class: "notice bad", hidden: true });
   show(
     panel(
       h(
@@ -746,11 +989,21 @@ function cancelledView(job) {
         h("h1", {}, "Stopped"),
         h("p", { class: "muted" }, `${(r.files_done || 0).toLocaleString()} files were already finished and stay in the folder. Half-written files were removed.`),
       ),
-      resume ? h("p", { class: "muted small" }, "Resume carries on into the same folder: files already there are checked and skipped, not downloaded again.") : null,
+      resume
+        ? h(
+            "p",
+            { class: "muted small" },
+            isDownloads(job.target)
+              ? "Resume carries on into the same folder: the files LinkUnzip already saved are skipped, not downloaded again."
+              : "Resume carries on into the same folder: files already there are checked and skipped, not downloaded again.",
+          )
+        : null,
+      handoverNotice(job, d, "Resume"),
+      problem,
     ),
     actionBar([
-      resume ? h("button", { class: "btn primary", onclick: () => send("resume", { id: job.id }) }, "Resume") : null,
-      r.output ? h("button", { class: "btn", onclick: () => send("reveal", { path: r.output }) }, "Open folder") : null,
+      resume ? h("button", { class: "btn primary", onclick: () => startExtraction(job, d, { ...extractAgain(job), resume: true }, problem) }, "Resume") : null,
+      r.output && job.via === "helper" ? h("button", { class: "btn", onclick: () => send("reveal", { path: r.output }) }, "Open folder") : null,
       dismissBtn("Close"),
     ]),
   );
@@ -760,11 +1013,11 @@ function cancelledView(job) {
 // Errors
 // ---------------------------------------------------------------------------------------
 
-// What using a login means, said before Chrome's permission prompt (store policy: disclose first).
+// What using a login means, said before it is used (store policy: disclose first).
 const loginUse = (host) =>
-  `your browser's cookies for ${host} go to the LinkUnzip helper on this PC, which sends them only to ${host}. Nothing goes to LinkUnzip itself.`;
+  `your browser sends its cookies for ${host} with LinkUnzip's requests to ${host}, and only there. Nothing goes to LinkUnzip itself.`;
 
-const LOGIN_REFUSED = "No problem. Without your login LinkUnzip can't read this download, but you can still download it normally.";
+const ACCESS_REFUSED = "No problem. Without access to this site LinkUnzip can't read the zip, but you can still download it normally.";
 
 /**
  * What each error code looks like: a title, a sentence or two, and what to offer (the first
@@ -776,19 +1029,41 @@ function describeError(job, e) {
   // A login only helps if none was sent; the user can turn the offer off in Settings.
   const offerLogin = !job.loginSent && settings.loginWhenNeeded && Boolean(sitePattern(job.url));
   switch (e.code) {
+    case "site_access":
+      return {
+        title: `Allow LinkUnzip to read ${host}`,
+        text: `To read the zip without downloading all of it, LinkUnzip needs Chrome's permission to fetch files from ${host}. It only connects there when you give it a link.`,
+        more: "Tip: Settings > Read zip links on every site saves you this step for every new site.",
+        actions: ["access", "download"],
+      };
+    case "ask_where":
+      return {
+        title: "Chrome asks where to save each download",
+        text: "Chrome is set to ask where to save every file, so it would ask once for each file in this zip.",
+        more: "Turn off \"Ask where to save each file before downloading\" in Chrome's download settings and try again, or choose a folder for LinkUnzip instead.",
+        folder: true,
+        actions: ["chromeSettings", "extractHere"],
+      };
+    case "folder_permission":
+      return { title: "LinkUnzip needs to write into the folder again", text: e.message, more: "Chrome asks again after the browser restarts. Click Extract here and choose Allow.", folder: true, actions: ["extractHere"] };
+    case "no_folder":
+      return { title: "Choose a folder", text: "Pick the folder LinkUnzip should extract into.", folder: true, actions: ["extractHere"] };
+    case "too_big":
+      return { title: "This zip's index is too big for the browser", text: e.message, actions: ["download"] };
     case "host_missing":
     case "host_forbidden":
-      return { title: "LinkUnzip isn't connected yet", text: e.message, actions: ["setup", "download"] };
+      return { title: "This needs the LinkUnzip helper for Windows", text: e.message, actions: ["setup", "download"] };
     case "host":
     case "host_silent":
-      return { title: "LinkUnzip stopped answering", text: e.message, actions: ["retry", "download"] };
+      return { title: "LinkUnzip stopped", text: e.message, actions: ["retry", "download"] };
     case "no_range":
       return {
         title: "This server can't send parts of the file",
         text: "It answered 200 OK with the whole file instead of 206 Partial Content.",
-        more: "Servers like GitHub's 'Download ZIP' build the file while they send it, so it can only be read from the start. LinkUnzip can still extract it in one pass: one connection, no size preview, and the zip is still never saved.",
-        folder: true,
-        actions: ["stream", "download"],
+        more: st.helperInfo
+          ? "Servers like GitHub's 'Download ZIP' build the file while they send it, so it can only be read from the start. The LinkUnzip helper can still extract it in one pass: one connection, no size preview, and the zip is still never saved."
+          : "Servers like GitHub's 'Download ZIP' build the file while they send it, so it can only be read from the start. Reading it in one pass needs the LinkUnzip helper for Windows for now; or download it normally.",
+        actions: st.helperInfo ? ["stream", "download"] : ["download"],
       };
     case "html_page":
       return {
@@ -801,7 +1076,7 @@ function describeError(job, e) {
       if (offerLogin) {
         return {
           title: `This download needs your login on ${host}`,
-          text: `The site says you need to be signed in. LinkUnzip can use your login on ${host}: ${loginUse(host)} Chrome asks you once, then the download starts again by itself.`,
+          text: `The site says you need to be signed in. LinkUnzip can use your login on ${host}: ${loginUse(host)} It starts again right away.`,
           actions: ["login", "download"],
         };
       }
@@ -837,6 +1112,14 @@ function describeError(job, e) {
         actions: ["retry", "download"],
       };
     case "network":
+      if (job.allSites === false) {
+        return {
+          title: `Can't read from ${host}`,
+          text: "Check your internet connection (or VPN or proxy), then try again.",
+          more: "If the link sends the download on to another site (many download links do), LinkUnzip needs permission to read there too. Allowing every site covers that.",
+          actions: ["accessAll", "retry"],
+        };
+      }
       return {
         title: `Can't reach ${host}`,
         text: "Check your internet connection (or VPN or proxy), then try again.",
@@ -851,6 +1134,15 @@ function describeError(job, e) {
         actions: ["extractHere"],
       };
     case "folder_not_writable":
+      if (isDownloads(job.target)) {
+        return {
+          title: "Couldn't save into Downloads",
+          text: e.message,
+          more: "Try again, or choose a folder for LinkUnzip instead.",
+          folder: true,
+          actions: ["extractHere"],
+        };
+      }
       return {
         title: "Can't write to this folder",
         text: "Windows didn't let LinkUnzip create files there (no permission, or the path is too long). Choose another folder.",
@@ -896,9 +1188,10 @@ async function browserAndOs() {
 
 async function detailsText(job, e) {
   const { browser, os } = await browserAndOs();
-  const helper = st.hostInfo ? `${st.hostInfo.version} (protocol ${st.hostInfo.protocol ?? 1})` : "not connected";
+  const helper = st.helperInfo ? `${st.helperInfo.version} (protocol ${st.helperInfo.protocol ?? 1})` : "not installed";
   return [
     `LinkUnzip extension ${chrome.runtime.getManifest().version}`,
+    `Engine: ${job.via === "helper" ? "helper" : "browser"}`,
     `Helper: ${helper}`,
     `Browser: ${browser}`,
     `OS: ${os}`,
@@ -929,14 +1222,14 @@ function copyDetailsBtn(job, e, cls) {
 }
 
 /** Ask Chrome for this job's site (it needs this click), then the background runs the job again. */
-function askForLogin(job, note) {
-  send("awaitLogin", { id: job.id }); // in case Chrome's prompt closes this popup
+function askForAccess(job, note) {
+  send("awaitAccess", { id: job.id }); // in case Chrome's prompt closes this popup
   chrome.permissions.request({ origins: [sitePattern(job.url)] }).then(
     (granted) => {
-      if (!granted) note.textContent = LOGIN_REFUSED;
-      send("loginAnswer", { id: job.id, granted });
+      if (!granted) note.textContent = ACCESS_REFUSED;
+      send("accessAnswer", { id: job.id, granted });
     },
-    () => send("loginAnswer", { id: job.id, granted: false }),
+    () => send("accessAnswer", { id: job.id, granted: false }),
   );
 }
 
@@ -946,38 +1239,32 @@ function errorView(job) {
   const host = hostOf(job.url);
   const web = /^https?:/i.test(job.url);
   const d = draftFor(job);
-  const note = h("p", { class: "muted small", role: "status" }, job.loginRefused ? LOGIN_REFUSED : "");
+  const note = h("p", { class: "muted small", role: "status" }, job.accessRefused ? ACCESS_REFUSED : "");
   const problem = h("p", { class: "notice bad", hidden: true });
 
-  const folder = () => {
-    const path = d.output.trim();
-    problem.hidden = Boolean(path);
-    problem.textContent = path ? "" : "Choose a folder to extract into.";
-    return path;
-  };
-
   const actions = {
-    setup: () => h("button", { onclick: openSetup }, "Set up LinkUnzip"),
-    stream: () =>
+    setup: () => h("button", { onclick: openSetup }, "Get the helper"),
+    access: () => h("button", { onclick: () => askForAccess(job, note) }, `Allow ${host}`),
+    accessAll: () =>
       h("button", {
         onclick: () => {
-          const path = folder();
-          if (path) send("extract", { id: job.id, output: path, include: [], connections: 1, stream: true });
+          send("awaitAccess", { id: job.id });
+          chrome.permissions.request(ALL_SITES).then(
+            (granted) => send("accessAnswer", { id: job.id, granted }),
+            () => send("accessAnswer", { id: job.id, granted: false }),
+          );
         },
-      }, "Stream it anyway"),
+      }, "Allow every site"),
+    stream: () => h("button", { onclick: () => send("extract", { id: job.id, include: [], connections: 1, stream: true }) }, "Stream it anyway"),
     // The same extraction as before, into the folder now in the field.
     extractHere: () =>
       h("button", {
-        onclick: () => {
-          const path = folder();
-          if (!path) return;
-          if (job.lastExtract) send("extract", { ...job.lastExtract, id: job.id, output: path });
-          else send("retry", { id: job.id });
-        },
-      }, "Extract here"),
-    login: () => h("button", { onclick: () => askForLogin(job, note) }, `Use my login on ${host}`),
+        onclick: () => (job.lastExtract ? startExtraction(job, d, extractAgain(job), problem) : send("retry", { id: job.id })),
+      }, isDownloads(d.target) ? "Try again" : "Extract here"),
+    chromeSettings: () => h("button", { onclick: () => chrome.tabs.create({ url: "chrome://settings/downloads" }) }, "Open Chrome's download settings"),
+    login: () => h("button", { onclick: () => send("useLogin", { id: job.id }) }, `Use my login on ${host}`),
     retry: () => h("button", { onclick: () => send("retry", { id: job.id }) }, "Try again"),
-    resume: () => h("button", { onclick: () => send("resume", { id: job.id }) }, "Resume"),
+    resume: () => h("button", { onclick: () => startExtraction(job, d, { ...extractAgain(job), resume: true }, problem) }, "Resume"),
     open: () => (web ? h("button", { onclick: () => chrome.tabs.create({ url: job.url }) }, "Open link") : null),
     page: () => h("button", { onclick: () => chrome.tabs.create({ url: job.pageUrl }) }, "Open the page"),
     download: () => (web ? h("button", { onclick: () => send("downloadNormally", { url: job.url }) }, "Download normally") : null),
@@ -1004,7 +1291,8 @@ function errorView(job) {
       ),
       info.more ? h("p", { class: "muted small" }, info.more) : null,
       note,
-      info.folder ? folderField("Extract into", d, job.id) : null,
+      info.folder ? folderField("Extract into", d, job) : null,
+      handoverNotice(job, d, buttons[0]?.textContent || "the button"),
       problem,
     ),
     actionBar([...buttons, dismissBtn()], [wanted.includes("copy") ? null : copyDetailsBtn(job, e, "link quiet")]),
@@ -1019,18 +1307,18 @@ function setupSettings() {
   const panel = document.getElementById("settings");
   const button = document.getElementById("settings-btn");
   const fields = {
-    baseFolder: document.getElementById("set-base"),
     connections: document.getElementById("set-jobs"),
     loginWhenNeeded: document.getElementById("set-login"),
+    loginEverywhere: document.getElementById("set-login-all"),
     catchDownloads: document.getElementById("set-catch"),
   };
   const save = () => {
     settings = {
-      baseFolder: fields.baseFolder.value.trim(),
+      ...settings,
       connections: Math.min(16, Math.max(1, Number(fields.connections.value) || 4)),
       loginWhenNeeded: fields.loginWhenNeeded.checked,
+      loginEverywhere: fields.loginEverywhere.checked,
       catchDownloads: fields.catchDownloads.checked,
-      theme: settings.theme,
     };
     chrome.storage.local.set({ settings });
   };
@@ -1060,22 +1348,51 @@ function setupSettings() {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", showTheme);
   applyTheme(settings.theme);
   showTheme();
-  fields.baseFolder.value = settings.baseFolder;
   fields.connections.value = settings.connections;
   fields.loginWhenNeeded.checked = settings.loginWhenNeeded;
+  fields.loginEverywhere.checked = settings.loginEverywhere;
   fields.catchDownloads.checked = settings.catchDownloads;
   for (const el of Object.values(fields)) el.addEventListener("change", save);
 
-  document.getElementById("set-base-browse").addEventListener("click", async () => {
-    const path = await pickFolder("baseFolder", fields.baseFolder.value.trim() || st.hostInfo?.downloads_dir || "");
-    if (path) {
-      fields.baseFolder.value = path;
-      save();
+  // Where every job goes: Downloads, or a folder chosen here (a subfolder per zip either way).
+  const saveRadios = [...document.querySelectorAll('#set-save input[name="save"]')];
+  const baseField = document.getElementById("set-base-field");
+  const baseName = document.getElementById("set-base");
+  const baseBtn = document.getElementById("set-base-browse");
+  const saveNote = document.getElementById("set-save-note");
+  const showSave = () => {
+    for (const radio of saveRadios) radio.checked = radio.value === settings.saveTo;
+    baseField.hidden = settings.saveTo !== "folder";
+    saveNote.textContent =
+      settings.saveTo === "folder"
+        ? "Much faster for zips with thousands of files. Chrome asks once to let LinkUnzip save there (and again after a browser restart)."
+        : "Each zip gets its own folder in Downloads. Nothing to set up; Chrome saves about 6 files a second, so for zips with thousands of files a folder you choose is faster.";
+  };
+  const showBase = (handle) => {
+    baseName.textContent = handle ? handle.name : "Not chosen yet";
+    baseBtn.textContent = handle ? "Change..." : "Choose folder...";
+  };
+  const setSaveTo = async (saveTo) => {
+    settings = { ...settings, saveTo };
+    await chrome.storage.local.set({ settings });
+    showSave();
+    await send("baseFolderChanged");
+  };
+  for (const radio of saveRadios) radio.addEventListener("change", () => radio.checked && setSaveTo(radio.value));
+  showSave();
+  getFolder("base").then(showBase);
+  baseBtn.addEventListener("click", async () => {
+    // The picker can't open in the toolbar popup (see Folders): Settings open in the window.
+    if (!windowMode) return openLinkUnzipWindow("&settings=1");
+    const handle = await chooseBaseFolder(null);
+    if (handle) {
+      showBase(handle);
+      if (settings.saveTo !== "folder") await setSaveTo("folder");
     }
   });
 
   // "Every site" is Chrome's permission itself, not a stored setting: ask on, remove off.
-  const everySite = document.getElementById("set-login-all");
+  const everySite = document.getElementById("set-sites-all");
   chrome.permissions.contains(ALL_SITES).then((on) => (everySite.checked = on));
   everySite.addEventListener("change", () => {
     if (everySite.checked) {
@@ -1091,10 +1408,8 @@ function setupSettings() {
     panel.hidden = !open;
     document.body.classList.toggle("settings-open", open);
     button.setAttribute("aria-expanded", String(open));
-    const i = st.hostInfo;
-    document.getElementById("host-info").textContent = i
-      ? `LinkUnzip helper ${i.version} (protocol ${i.protocol ?? 1})${helperNeedsUpdate(i) ? ", update available" : ""} · ${i.os} · downloads: ${i.downloads_dir}`
-      : "helper not connected";
+    const helper = st.helperInfo;
+    document.getElementById("host-info").textContent = `LinkUnzip ${chrome.runtime.getManifest().version} · works in the browser${helper ? ` · Windows helper ${helper.version} installed (used for servers without Range support)` : ""}`;
   };
   button.addEventListener("click", () => toggle(panel.hidden));
   document.getElementById("settings-done").addEventListener("click", () => {
@@ -1106,19 +1421,39 @@ function setupSettings() {
 
 // ---------------------------------------------------------------------------------------
 
-const reopenedFor = await loadState();
+const handedOver = await loadState();
+const query = new URLSearchParams(location.search);
 const toggleSettings = setupSettings();
-if (reopenedFor === "settings") toggleSettings(true);
+// The toolbar popup sent an extraction here: start it right away when Chrome has nothing to
+// ask, otherwise the ready view asks for the one click (see readyView).
+if (windowMode && query.has("start") && handedOver) {
+  const job = st.jobs[handedOver.id];
+  const d = job ? draftFor(job) : null;
+  if (job?.phase === "ready" || job?.phase === "error" || job?.phase === "cancelled") {
+    if (await folderReady(d)) {
+      await chrome.storage.session.remove("pendingExtract");
+      await send("extract", { ...handedOver, target: d.target, output: d.output });
+    } else {
+      // The view's own button (Start Extraction, Resume, Extract here) does the asking.
+      pending = handedOver;
+    }
+  }
+}
 render();
+if (windowMode && query.has("settings")) toggleSettings(true);
+if (windowMode && query.has("change")) {
+  announce("Click Change... to choose the folder.");
+  document.querySelector(".folder-row .btn")?.focus();
+}
 send("ping").then((r) => {
-  const helperKey = () => `${st.hostInfo?.protocol}|${st.hostInfo?.version}|${st.hostInfo?.features}`;
-  const before = helperKey();
+  const key = () => `${st.hostInfo?.version}|${st.hostInfo?.features}|${Boolean(st.helperInfo)}`;
+  const before = key();
   if (r?.info) st.hostInfo = r.info;
-  if (r && !r.ok && r.error) st.hostError = r.error;
-  if (r?.ok) st.hostError = null;
+  if (r?.helper) st.helperInfo = r.helper;
+  st.hostError = r && !r.ok ? r.error : null;
   renderChip();
-  // Show the install hint if the host turned out to be missing, or what this helper allows.
-  if (!currentJob() || helperKey() !== before) {
+  // What this engine allows (the file list, preview) may only be known now.
+  if (!currentJob() || key() !== before) {
     drawn = "";
     render();
   }

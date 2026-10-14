@@ -1,19 +1,21 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "default_locale": "en",
   "description": "__MSG_extDescription__",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp1Hg69res4Gmo8PR/zatyCyYMz+tx7AbiQuIfxFqrb9i55RdaLL76U5iT8jGPmjJfVtS4PJCR6MlUhSIEoaWFePoKre2IRuLMcgCaNsPn9BOXveyNpCWMAnOMVfPMe2PDlMK+JUXwU087xnQh2I9d9qTUZffD4QuyZBCGAhmcMFH+3W0CDmqmi8ezb24ZddWAl18gpqYexeDOrKWJvJDd54PEXI9K8CobNFz6DR9EcYgr8WT0BM2gypXmXc8YY9IAgDmr7+8xvVXYP1EH+u/N9iIys6oc2uq1rhHlzLjT1dgrOKC1s5aOSglz8eyJN8KteD31vfP4oINE0gNCWq0KQIDAQAB",
   "minimum_chrome_version": "116",
   "permissions": [
     "nativeMessaging",
+    "offscreen",
     "contextMenus",
     "storage",
     "notifications",
     "cookies",
     "downloads",
     "downloads.open",
+    "downloads.ui",
     "scripting",
     "activeTab"
   ],
