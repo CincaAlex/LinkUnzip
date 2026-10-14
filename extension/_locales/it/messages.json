@@ -3,6 +3,6 @@
     "message": "LinkUnzip: estrai file ZIP direttamente dai link"
   },
   "extDescription": {
-    "message": "Estrae uno ZIP da un link direttamente in una cartella senza salvarlo. Ogni file verificato. Windows, con una piccola app gratuita."
+    "message": "Estrae uno ZIP da un link direttamente in Download o in una cartella, senza salvarlo. Con anteprima. Ogni file verificato."
   }
 }

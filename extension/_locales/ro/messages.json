@@ -3,6 +3,6 @@
     "message": "LinkUnzip: dezarhivează fișiere ZIP direct din linkuri"
   },
   "extDescription": {
-    "message": "Extrage un ZIP dintr-un link direct într-un folder, fără să-l salveze. Fiecare fișier verificat. Windows, cu un mic program gratuit."
+    "message": "Extrage un ZIP dintr-un link direct în Descărcări sau într-un folder, fără să-l salveze. Previzualizare. Fiecare fișier verificat."
   }
 }
