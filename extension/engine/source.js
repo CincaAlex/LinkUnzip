@@ -79,6 +79,20 @@ async function get(url, init) {
 }
 
 /**
+ * Does `url` answer with a redirect? Asked without following it, so a redirect to a site the
+ * extension may not read still shows up (as an opaque redirect, with no location).
+ */
+async function redirects(url, { credentials, signal }) {
+  try {
+    const resp = await fetch(url, { method: "GET", headers: { Range: "bytes=0-0" }, credentials, cache: "no-store", redirect: "manual", signal });
+    resp.body?.cancel().catch(() => {});
+    return resp.type === "opaqueredirect";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Read a response body as exact byte counts. `pos` is the file offset of the next byte; `count`
  * is told about every byte that arrives.
  */
@@ -172,6 +186,11 @@ export class Source {
         if (resp.status >= 500 || resp.status === 408 || resp.status === 429) throw statusError(resp.status, url, resp.url, " to the probe request");
         break;
       } catch (e) {
+        // The browser blocks the answer of a redirect to a site LinkUnzip may not read, and that
+        // looks like a network error: find out once instead of retrying a connection that works.
+        if (attempt === 1 && e?.code === "network" && (await redirects(url, { credentials, signal }))) {
+          throw new Coded("redirect_access", "the link redirects to another site, and the browser didn't let LinkUnzip read the answer from there", { detail: e.detail || e.message });
+        }
         if (!isTransient(e) || attempt >= RETRY.attempts) throw e;
         await sleep(delayAfter(attempt), signal);
       }

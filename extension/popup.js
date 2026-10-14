@@ -1111,6 +1111,16 @@ function describeError(job, e) {
         text: `The server kept answering with an error${status}. This is usually temporary: try again in a minute.`,
         actions: ["retry", "download"],
       };
+    case "redirect_access":
+      if (job.allSites !== true) {
+        return {
+          title: `${host} sends the download on to another site`,
+          text: "The link redirects to another server, as many download links do, and LinkUnzip may only read the sites you allowed. Allow every site so it can follow the link.",
+          more: "LinkUnzip still only connects to the sites your links lead to.",
+          actions: ["accessAll", "download"],
+        };
+      }
+    // falls through: with every site allowed, it really was the connection
     case "network":
       if (job.allSites === false) {
         return {

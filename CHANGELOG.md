@@ -32,6 +32,9 @@ keeps its older version until the next full release.
   folder's name; Chrome doesn't tell extensions the full path.
 - Logins: the browser sends its own cookies for the zip's site, only when you allowed it for that
   site (or in Settings for every site). They no longer go to a helper program.
+- A link that sends the download on to another site (GitHub's "Download ZIP" goes on to
+  codeload.github.com) while LinkUnzip may only read the first one now says so, with Allow every
+  site, instead of retrying like a lost connection.
 - The helper is optional: it is still used for servers that can't send parts of a file (stream
   mode) and for Open folder on its own jobs.
 

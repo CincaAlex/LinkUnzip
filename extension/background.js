@@ -50,10 +50,12 @@ async function restore() {
     jobs.set(id, job);
   }
   hostInfo = savedInfo;
-  // Engine jobs that haven't been heard of since the restart really were lost.
+  // Engine jobs that were running before the restart and haven't been heard of since really were
+  // lost. (Jobs started after the restart can be quiet for longer: reading a big index sends
+  // nothing until it's done.)
   setTimeout(() => {
     for (const job of jobs.values()) {
-      if (running(job) && job.via !== "helper" && !(job.seenAt > restartedAt)) {
+      if (running(job) && job.via !== "helper" && !(job.startedAt > restartedAt) && !(job.seenAt > restartedAt)) {
         fail(job, { code: "host", message: "LinkUnzip was interrupted." });
       }
     }
@@ -369,7 +371,7 @@ function onReply(msg) {
       fail(job, { code: msg.code || "failed", message: msg.message, detail: msg.detail, http_status: msg.http_status, host: msg.host });
       // A link that redirects to another site fails like a network error when LinkUnzip may only
       // read the first site: the popup then also offers access to every site.
-      if (msg.code === "network" && job.via !== "helper") {
+      if ((msg.code === "network" || msg.code === "redirect_access") && job.via !== "helper") {
         chrome.permissions.contains({ origins: ["<all_urls>"] }).then((all) => {
           job.allSites = all;
           persist();
@@ -627,6 +629,7 @@ async function startInspect({ url, pageUrl = "" }) {
 /** Ask the engine to read the index of an existing job (first time, or again after a failure). */
 async function sendInspect(job) {
   job.phase = "inspecting";
+  job.startedAt = Date.now();
   job.error = null;
   job.via = "engine";
   persist();
@@ -648,6 +651,7 @@ async function startExtract({ id, output, target, include = [], select, connecti
   if (!job) return { ok: false, error: "That job no longer exists." };
   const settings = await getSettings();
   job.lastExtract = { id, output, target, include, select, connections, force, stream };
+  job.startedAt = Date.now();
   job.stream = stream;
   job.progress = null;
   job.error = null;
