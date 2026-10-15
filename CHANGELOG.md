@@ -7,7 +7,7 @@ keeps its older version until the next full release.
 
 ## Unreleased
 
-### 1.1.0 (extension only, in testing)
+## 1.1.0 - 2026-10-15 (extension only)
 
 ### Added
 - LinkUnzip works without the helper: the extension reads the index, downloads only the parts it
