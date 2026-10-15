@@ -2,9 +2,11 @@
 // saved by an older version up to date.
 
 export const DEFAULT_SETTINGS = {
-  baseFolder: "", // empty = <Downloads>\LinkUnzip
+  baseFolder: "", // unused since 1.1.0: the folder is a saved folder handle (folder.js)
+  saveTo: "downloads", // "downloads": Chrome's downloads; "folder": the folder chosen in Settings
   connections: 4,
   loginWhenNeeded: true, // offer "Use my login on <host>" when a download needs the user's login
+  loginEverywhere: false, // send the browser's cookies to every zip site without asking per site
   catchDownloads: false, // intercept .zip downloads and offer to extract instead
   theme: "system", // "system" follows Windows; "light" or "dark" is the user's choice
 };
@@ -31,7 +33,7 @@ export function effectiveTheme(theme) {
   return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-// "Use my login on every site" is not stored here: it is Chrome's own grant of this permission.
+// "Read zip links on every site" is not stored here: it is Chrome's own grant of this permission.
 export const ALL_SITES = { origins: ["<all_urls>"] };
 
 export function migrate(saved = {}) {

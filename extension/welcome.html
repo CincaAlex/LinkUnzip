@@ -23,44 +23,44 @@
           <span class="mark" aria-hidden="true"></span>
           <div>
             <h2>Add the extension</h2>
-            <p class="muted">Done.</p>
+            <p class="muted">Done. Everything runs here in the browser: there is nothing else to install.</p>
           </div>
         </li>
 
-        <li class="step" id="step-helper" data-state="checking">
+        <li class="step" id="step-sites" data-state="next">
           <span class="mark" aria-hidden="true"></span>
           <div>
-            <h2 id="helper-title">Install the LinkUnzip helper for Windows</h2>
-            <p id="helper-status" class="status" role="status">Checking this PC...</p>
-            <p id="helper-detail" class="detail" hidden></p>
-            <p id="helper-update" class="muted" hidden>
-              A newer helper is available: it adds Browse..., choosing files and Resume.
-              <a href="welcome.html?update=1">Update the helper</a>
+            <h2>Let LinkUnzip read zip links</h2>
+            <p class="muted">
+              To read a zip's index and only the files you pick, LinkUnzip asks the zip's server for parts of the file.
+              Chrome needs your permission for that. LinkUnzip only connects to a site when you give it a link there,
+              and nothing goes anywhere else.
             </p>
-            <div id="helper-setup" hidden>
-              <p id="helper-why" class="muted">
-                A browser extension can't write files to your disk by itself, so a small helper program does the
-                downloading and unpacking. It installs just for you (no administrator rights) and only runs while
-                you're using LinkUnzip.
-              </p>
-              <div class="btn-row">
-                <button id="download" class="btn primary" type="button" hidden>Download linkunzip-setup.exe</button>
-                <span id="no-download" class="btn disabled" hidden>Download not published yet</span>
-              </div>
-              <p class="muted small">
-                When it's downloaded, click <b>Open the installer</b>, then <b>Install</b>. If the browser asks, choose
-                <b>Keep</b>. Windows may say it doesn't recognise the app: click <b>More info</b>, then <b>Run anyway</b>.
-              </p>
-              <p class="muted small">
-                This page notices the helper by itself a few seconds after it is installed. If it doesn't, close every
-                browser window and open the browser again.
-              </p>
-              <details>
-                <summary>Prefer the terminal?</summary>
-                <p class="muted small">With linkunzip.exe downloaded, this does the same as the installer:</p>
-                <code>linkunzip host install</code>
-              </details>
+            <div class="btn-row">
+              <button id="allow-all" class="btn primary" type="button">Allow on every site</button>
             </div>
+            <p id="sites-status" class="status" role="status"></p>
+            <p class="muted small">Prefer to decide per site? Skip this: LinkUnzip asks the first time you use a link on a new site.</p>
+          </div>
+        </li>
+
+        <li class="step" id="step-folder" data-state="done">
+          <span class="mark" aria-hidden="true"></span>
+          <div>
+            <h2>Where extracted files go</h2>
+            <p class="muted">
+              Into your <b>Downloads</b> folder, in a folder named after the zip. Nothing to set up.
+            </p>
+            <p class="muted small">
+              Zips with thousands of files are much faster into a folder you choose: Chrome's downloads save about 6
+              files a second. Chrome doesn't let extensions pick Downloads, Desktop or Documents themselves, so make a
+              folder inside one of them (for example Downloads &gt; LinkUnzip) and pick that.
+            </p>
+            <div class="btn-row">
+              <button id="folder" class="btn" type="button">Choose a folder instead...</button>
+              <button id="use-downloads" class="btn" type="button" hidden>Use Downloads</button>
+            </div>
+            <p id="folder-status" class="status" role="status"></p>
           </div>
         </li>
 
@@ -75,6 +75,15 @@
             <p class="muted small">
               Can't see the icon? Click the puzzle piece next to the address bar, then the pin next to LinkUnzip.
             </p>
+            <details>
+              <summary>Optional: the LinkUnzip helper for Windows</summary>
+              <p class="muted small">
+                A few servers (like GitHub's green "Download ZIP" button) can only send a zip from the start. The browser
+                version can't read those yet; the helper program for Windows can, in one pass. It also brings the
+                <code>linkunzip</code> command line.
+                <a href="https://github.com/CincaAlex/LinkUnzip/releases/latest" target="_blank" rel="noopener">Get it on GitHub</a>.
+              </p>
+            </details>
           </div>
         </li>
       </ol>

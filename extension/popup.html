@@ -56,11 +56,19 @@
             <label><input type="radio" name="theme" value="dark" /><span>Dark</span></label>
           </div>
         </fieldset>
-        <div class="field">
-          <label for="set-base">Extract into (base folder)</label>
-          <div class="path-row">
-            <button id="set-base-browse" class="btn browse" type="button" aria-label="Browse for the base folder" hidden>Browse...</button>
-            <input id="set-base" type="text" spellcheck="false" placeholder="Downloads\LinkUnzip" />
+        <fieldset class="choice" id="set-save">
+          <legend>Save extracted files to</legend>
+          <div class="segmented two">
+            <label><input type="radio" name="save" value="downloads" /><span>Downloads</span></label>
+            <label><input type="radio" name="save" value="folder" /><span>A folder I choose</span></label>
+          </div>
+          <p id="set-save-note" class="muted small"></p>
+        </fieldset>
+        <div class="field" id="set-base-field" hidden>
+          <span class="label">The folder (each zip gets its own folder inside it)</span>
+          <div class="path-row folder-row">
+            <button id="set-base-browse" class="btn browse" type="button" aria-label="Choose the folder LinkUnzip extracts into">Choose folder...</button>
+            <span id="set-base" class="folder-name">Not chosen yet</span>
           </div>
         </div>
         <label class="field inline">
@@ -70,17 +78,24 @@
       </div>
       <div class="card panel">
         <label class="check">
+          <input id="set-sites-all" type="checkbox" />
+          <span>
+            Read zip links on every site
+            <small>Lets LinkUnzip fetch parts of a zip from any site you give it a link to, without asking Chrome for each new site. It only connects to a site when you give it a link there.</small>
+          </span>
+        </label>
+        <label class="check">
           <input id="set-login" type="checkbox" />
           <span>
             Use my login when a site needs it
-            <small>When a download needs you to be signed in, LinkUnzip offers to send that one site's cookies to the LinkUnzip helper on this PC. Chrome asks once per site.</small>
+            <small>When a download needs you to be signed in, LinkUnzip offers to send your browser's cookies for that one site along with its requests there.</small>
           </span>
         </label>
         <label class="check">
           <input id="set-login-all" type="checkbox" />
           <span>
             Use my login on every site
-            <small>Passes the zip site's cookies to the helper on this PC, which sends them only to that site, without asking per site. Chrome asks you once.</small>
+            <small>Sends your browser's cookies for the zip's site with every request to that site, without asking per site. They never go anywhere else.</small>
           </span>
         </label>
         <label class="check">
@@ -103,7 +118,7 @@
     <footer id="statusbar">
       <span>Status: <b id="status-text">Ready</b></span>
       <span>No Account Needed</span>
-      <span id="host-chip" class="chip" data-state="unknown">Helper Status <b>Connecting...</b></span>
+      <span id="host-chip" class="chip" data-state="unknown">Engine <b>Starting...</b></span>
     </footer>
 
     <script type="module" src="popup.js"></script>

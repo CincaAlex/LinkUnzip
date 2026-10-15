@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Preview - LinkUnzip</title>
+    <link rel="icon" href="icons/icon32.png" />
+    <script src="theme.js"></script>
+    <link rel="stylesheet" href="viewer.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <img class="mark" src="icons/logo-lines.png" alt="" width="14" height="24" />
+        <span class="wordmark" aria-label="LinkUnzip"><b>LINK</b>UNZIP</span>
+      </div>
+      <div class="title">
+        <h1 id="name">Preview</h1>
+        <p id="where" class="muted"></p>
+      </div>
+      <nav class="nav" aria-label="Files in this folder">
+        <button id="prev" class="btn" type="button" title="Previous file (Left arrow)" disabled>Previous</button>
+        <button id="next" class="btn" type="button" title="Next file (Right arrow)" disabled>Next</button>
+      </nav>
+    </header>
+    <div id="bar" class="bar">
+      <span id="stats" class="muted" role="status"></span>
+      <span class="spacer"></span>
+      <label id="wrap-box" class="check" hidden><input id="wrap" type="checkbox" checked /> Wrap lines</label>
+      <button id="more" class="btn" type="button" hidden>Load more</button>
+    </div>
+    <main id="view" tabindex="-1"></main>
+    <script type="module" src="viewer.js"></script>
+  </body>
+</html>
