@@ -75,7 +75,7 @@ Sizes are shown the way Windows shows them (1 GB = 1024 MB).
 
 ## Install
 
-Add LinkUnzip from the [Chrome Web Store](https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica). Edge, Brave and Chromium can
+Add LinkUnzip from the [Chrome Web Store](https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica?utm_source=github&utm_medium=readme). Edge, Brave and Chromium can
 install it from there too (in Edge, click **Allow extensions from other stores** when it asks).
 The Edge Add-ons listing will follow. You can also [run it from source](#build-from-source).
 
