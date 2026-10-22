@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/CincaAlex/LinkUnzip/actions/workflows/ci.yml"><img src="https://github.com/CincaAlex/LinkUnzip/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/CincaAlex/LinkUnzip/releases/latest"><img src="https://img.shields.io/github/v/release/CincaAlex/LinkUnzip" alt="Latest release"></a>
+  <a href="https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/chrome-web-store/v/dapeiljhjlaelolngnoagobeojcpkica" alt="Chrome Web Store version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
   <img src="https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%20%7C%20Brave-4285F4" alt="Chrome, Edge and Brave">
 </p>
@@ -26,13 +26,13 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/popup-choose-dark.png">
-    <img src="docs/images/popup-choose-light.png" width="340" alt="The LinkUnzip popup for the Blender 4.2 zip: the Cost Analysis and the File List with a few items unticked">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/popup-pick-dark.png">
+    <img src="docs/images/popup-pick-light.png" width="340" alt="The LinkUnzip popup for COCO train2017, an 18.01 GB zip: the Cost Analysis and one photo picked in the File List, 219.0 KB to download">
   </picture>
   &nbsp;&nbsp;
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/popup-done-dark.png">
-    <img src="docs/images/popup-done-light.png" width="340" alt="The done screen: 5,518 files extracted and verified, zip stored on disk 0 B">
+    <img src="docs/images/popup-done-light.png" width="340" alt="The done screen: 1 file extracted and verified into Downloads, 12.2 MB downloaded, zip stored on disk 0 B">
   </picture>
 </p>
 
