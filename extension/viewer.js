@@ -46,7 +46,7 @@ const view = $("view");
 const send = (cmd, data = {}) => chrome.runtime.sendMessage({ cmd, ...data });
 
 let current = null; // { ctl, url } of what is on screen, to let go of it
-let siblings = null; // files in the same folder, for Previous / Next
+let around = null; // { path, prev, next }: the files before and after this one in its folder
 
 const extOf = (p) => {
   const name = p.slice(p.lastIndexOf("/") + 1).toLowerCase();
@@ -342,31 +342,21 @@ async function show(force = false) {
   }
 }
 
-async function loadSiblings() {
-  const dir = parentOf(path);
-  const files = [];
-  for (let offset = 0; ; ) {
-    const r = await send("list", { id: jobId, dir, offset, limit: 2000 });
-    if (!r?.ok) break;
-    files.push(...r.listing.items.filter((i) => !i.dir && !i.unsupported).map((i) => i.path));
-    offset += r.listing.items.length;
-    if (offset >= r.listing.total || !r.listing.items.length || files.length > 20000) break;
-  }
-  return { dir, files };
-}
-
+// The engine knows each file's place in its folder, so this is one small question per file,
+// however many files the folder holds.
 async function updateNav() {
-  if (!siblings || siblings.dir !== parentOf(path)) siblings = await loadSiblings();
-  const i = siblings.files.indexOf(path);
-  $("prev").disabled = i <= 0;
-  $("next").disabled = i < 0 || i >= siblings.files.length - 1;
+  const asked = path;
+  const r = await send("neighbors", { id: jobId, path });
+  if (asked !== path) return;
+  around = r?.ok ? { path, prev: r.prev, next: r.next } : null;
+  $("prev").disabled = !around?.prev;
+  $("next").disabled = !around?.next;
 }
 
 function go(step) {
-  if (!siblings) return;
-  const i = siblings.files.indexOf(path);
-  const next = siblings.files[i + step];
-  if (i < 0 || !next) return;
+  if (!around || around.path !== path) return;
+  const next = step < 0 ? around.prev : around.next;
+  if (!next) return;
   path = next;
   history.replaceState(null, "", `viewer.html?job=${encodeURIComponent(jobId)}&path=${encodeURIComponent(path)}`);
   show();

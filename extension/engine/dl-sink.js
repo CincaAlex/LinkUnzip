@@ -58,11 +58,13 @@ const strictName = (parts) => downloadsName(parts.map((p) => p.replace(/[^\p{L}\
 /**
  * A sink into `Downloads/<sub>`. `save({url, filename, path})` asks the background to download
  * the blob URL and answers `{ok, held, code, error}`; `saved` (path -> "crc:size") remembers what
- * was saved before, so Resume can skip it.
+ * was saved before, so Resume can skip it. With a `store` (store.js), that record also outlives
+ * the engine's page: it is kept per archive version until the extraction finishes.
  */
-export function downloadsSink({ sub, label, save, saved }) {
+export function downloadsSink({ sub, label, save, saved, store = null }) {
   const renames = [];
   const held = [];
+  let run = null; // this archive's record in `store`
   let saving = 0;
   let waitingBytes = 0;
   let firstDone = false;
@@ -97,7 +99,10 @@ export function downloadsSink({ sub, label, save, saved }) {
       if (!r.ok) throw fromSave(r, path);
       if (name.changed) renames.push([path, name.parts.join("/")]);
       if (r.held) held.push({ name: path, why: r.held, id: r.downloadId });
-      else saved.set(path, `${entry.crc}:${entry.usize}`);
+      else {
+        saved.set(path, `${entry.crc}:${entry.usize}`);
+        run?.add(path, `${entry.crc}:${entry.usize}`);
+      }
       firstDone = true;
     } finally {
       saving -= 1;
@@ -110,6 +115,25 @@ export function downloadsSink({ sub, label, save, saved }) {
     label,
     renames,
     held,
+
+    /** Resume: what an earlier run of this archive saved counts too. A new run starts afresh. */
+    async begin({ key, resume }) {
+      if (!store || !key) return;
+      run = await store.openRun(`${key}\n${sub}`, { sub }).catch(() => null);
+      if (!run) return;
+      if (!resume) {
+        saved.clear();
+        await run.clear();
+        return;
+      }
+      for (const [path, sig] of await run.load()) if (!saved.has(path)) saved.set(path, sig);
+    },
+
+    /** Finished: the record goes. Stopped or failed: it stays for Resume. */
+    async end(ok) {
+      if (ok) await run?.clear();
+      else await run?.flush();
+    },
 
     // Chrome makes the folders a file needs; empty folders aren't kept.
     async mkdir() {},

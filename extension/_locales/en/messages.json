@@ -1,6 +1,6 @@
 {
   "extName": {
-    "message": "LinkUnzip: extract ZIP files straight from links",
+    "message": "LinkUnzip: unzip ZIP files straight from links",
     "description": "Extension name in the store and on chrome://extensions. Max 75 characters."
   },
   "extDescription": {

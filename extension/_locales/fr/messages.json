@@ -1,6 +1,6 @@
 {
   "extName": {
-    "message": "LinkUnzip : extraire des fichiers ZIP directement depuis un lien"
+    "message": "LinkUnzip : décompresser des fichiers ZIP directement depuis un lien"
   },
   "extDescription": {
     "message": "Extrait un ZIP d'un lien directement dans Téléchargements ou un dossier, sans enregistrer le ZIP. Aperçu. Fichiers vérifiés."

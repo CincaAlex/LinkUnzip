@@ -685,6 +685,31 @@ button.btn.fl-more[hidden] {
   gap: 12px;
   white-space: nowrap;
 }
+/* "*.jpg *.json ...": the zip's most common file types, one click to search for each. */
+.fl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip-btn {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--muted);
+  font: 12px/20px var(--mono);
+  cursor: pointer;
+}
+.chip-btn:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.chip-btn[aria-pressed="true"] {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: var(--accent-ink);
+}
 
 details.advanced {
   display: grid;

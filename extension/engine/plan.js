@@ -69,7 +69,7 @@ export function sanitizeEntryName(name) {
 // ------------------------------------------------------------------------------------------
 
 /** `*` (crossing `/`), `?` and `[...]` like the helper's --include, case-insensitive. */
-function globToRegExp(pattern) {
+export function globToRegExp(pattern) {
   let re = "";
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i];
@@ -95,24 +95,56 @@ function inSet(set, path) {
   return false;
 }
 
-/** Which entries to extract: patterns (empty = all) and the file list's {paths, exclude}. */
+/**
+ * The file list's ticks: path -> ticked, where a path is a file, a folder ending in "/", or "" for
+ * the whole zip. Each entry follows its nearest marked parent (or its own mark); with no mark on
+ * the way up it is ticked.
+ */
+export function nearestMark(marks, path) {
+  if (marks.has(path)) return marks.get(path);
+  for (let i = path.lastIndexOf("/", path.length - 2); i > 0; i = path.lastIndexOf("/", i - 1)) {
+    const folder = path.slice(0, i + 1);
+    if (marks.has(folder)) return marks.get(folder);
+  }
+  return marks.has("") ? marks.get("") : true;
+}
+
+/** `{marks: {path: ticked}}` as a Map, keeping only well-formed marks. */
+function marksOf(select) {
+  if (!select?.marks || typeof select.marks !== "object") return null;
+  const marks = new Map();
+  for (const [k, v] of Object.entries(select.marks)) if (typeof v === "boolean") marks.set(k, v);
+  return marks;
+}
+
+/**
+ * Which entries to extract: patterns (empty = all) and the file list's selection, either its
+ * ticks (`{marks}`, nearest mark wins) or the helper's `{paths, exclude}` (exclude wins).
+ */
 export class Filter {
   constructor(includes = [], select = null) {
     this.includes = includes.filter(Boolean);
     this.patterns = this.includes.map(globToRegExp);
+    this.marks = marksOf(select);
     this.paths = new Set(select?.paths || []);
     this.exclude = new Set(select?.exclude || []);
   }
 
+  /** Only ticks, no patterns: what the file list's totals can add up folder by folder. */
+  get marksOnly() {
+    return !this.patterns.length && !this.paths.size && !this.exclude.size;
+  }
+
   matches(name) {
     if (this.patterns.length && !this.patterns.some((p) => p.test(name))) return false;
+    if (this.marks) return nearestMark(this.marks, listPath(name));
     if (!this.paths.size && !this.exclude.size) return true;
     const path = listPath(name);
     return (!this.paths.size || inSet(this.paths, path)) && !inSet(this.exclude, path);
   }
 
   nothingSelected() {
-    if (this.paths.size || this.exclude.size) return "nothing in the archive matches the selection";
+    if (this.marks?.size || this.paths.size || this.exclude.size) return "nothing in the archive matches the selection";
     if (!this.patterns.length) return "the archive contains no entries";
     return `no entries in the archive match ${this.includes.join(", ")}`;
   }
@@ -141,6 +173,27 @@ function unsupportedMessage(list) {
 }
 
 /**
+ * `offset -> where that entry's region ends`: the next entry's start, or the central directory.
+ * Built once per index (sorted offsets, binary search) and kept on it.
+ */
+export function regionEndOf(index) {
+  if (!index.regionEnd) {
+    const offsets = [...new Set([...index.entries.map((e) => e.offset), index.centralDirOffset])].sort((a, b) => a - b);
+    index.regionEnd = (offset) => {
+      let lo = 0;
+      let hi = offsets.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (offsets[mid] <= offset) lo = mid + 1;
+        else hi = mid;
+      }
+      return offsets[lo];
+    };
+  }
+  return index.regionEnd;
+}
+
+/**
  * Select the entries and refuse anything unsafe or unsupported. Returns the files sorted by their
  * position in the archive (each with its safe path and where its region ends), folders to create
  * and every rename.
@@ -152,18 +205,7 @@ export function check(index, filter) {
   const dirs = [];
   const renames = [];
   const taken = new Map(); // lower-cased output path -> entry name
-
-  const offsets = [...new Set([...index.entries.map((e) => e.offset), index.centralDirOffset])].sort((a, b) => a - b);
-  const regionEnd = (offset) => {
-    let lo = 0;
-    let hi = offsets.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (offsets[mid] <= offset) lo = mid + 1;
-      else hi = mid;
-    }
-    return offsets[lo];
-  };
+  const regionEnd = regionEndOf(index);
 
   for (const entry of index.entries) {
     if (!filter.matches(entry.name)) continue;

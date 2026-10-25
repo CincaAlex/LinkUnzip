@@ -1,12 +1,13 @@
 # LinkUnzip privacy policy
 
-Effective 14 October 2026. Applies to the LinkUnzip browser extension (Chrome, Edge, Brave and other
+Effective 24 October 2026. Applies to the LinkUnzip browser extension (Chrome, Edge, Brave and other
 Chromium browsers) and the optional LinkUnzip helper program for Windows (`linkunzip.exe`). Since
 version 1.1.0 the extension works on its own; the helper is only used if you install it.
 
-**In short:** LinkUnzip has no accounts, no analytics, no ads and no servers of its own. It does not
-collect, sell or share any data about you. It connects only to the server of the link you chose,
-and the files you extract stay on your PC.
+**In short:** LinkUnzip has no accounts, no analytics and no ads. It does not collect, sell or share
+any data about you. It connects only to the server of the link you chose, and the files you extract
+stay on your PC. The only thing that can reach the project is an answer you choose to send from the
+page that opens when you remove the extension.
 
 ## What happens when you extract a zip
 
@@ -48,7 +49,9 @@ login for that one site, **only if you allowed it**:
   has any, following its usual rules.
 - With the optional helper only, the extension reads the cookies for the link's site at the moment
   you start and passes them to the helper on your PC. The helper sends them only to that site, and
-  drops them if the download is redirected to a different site.
+  drops them if the download is redirected to a different site. For this the extension needs
+  Chrome's cookies permission, which it asks for the first time it is needed (from version 1.1.1;
+  before, it had it from the install).
 - Cookies are never stored by LinkUnzip, never written to disk by it, and never sent anywhere else.
 
 Without that permission, LinkUnzip's requests carry no cookies at all.
@@ -68,11 +71,17 @@ Without that permission, LinkUnzip's requests carry no cookies at all.
   briefly (in memory, or in its own temporary storage for large files) until it is saved.
 - **Chrome's download list**: LinkUnzip removes its own entries as soon as each file is saved.
   Files Chrome holds back (such as `.dll` files) stay in the list until you keep or remove them.
-- **Resume information**: in a folder you chose, Resume checks the files that are already there.
-  For Downloads, LinkUnzip remembers in memory which files it saved, until its background page
-  closes. The helper, for its own jobs, keeps a small progress file (`.linkunzip-resume.jsonl`) in
-  the destination folder while a job is unfinished, and deletes it when the job finishes.
-- LinkUnzip and the helper keep no logs and no history.
+- **Zip indexes** (from version 1.1.1): the list of files inside the last few zips you opened, with
+  their links, so opening one again doesn't download its index again. In the browser's extension
+  storage on your PC (IndexedDB): at most 12, each for at most a week. *Settings > Forget them*
+  removes them at once.
+- **Resume information**: in a folder you chose, LinkUnzip (like the helper for its own jobs) keeps
+  a small progress file (`.linkunzip-resume.jsonl`) in that folder while a job is unfinished: the
+  zip's size and version, then the name, size and checksum of each finished file. It is deleted
+  when the job finishes. For Downloads, LinkUnzip remembers which files of a zip it saved, in the
+  extension's storage on your PC (IndexedDB), until that extraction finishes (at most 30 days).
+- LinkUnzip and the helper keep no logs. Apart from the zip indexes above, they keep no history of
+  what you opened.
 
 ## Other things the extension can see
 
@@ -82,8 +91,9 @@ Without that permission, LinkUnzip's requests carry no cookies at all.
 - **Downloads**: LinkUnzip saves extracted files through Chrome's downloads. While it does, it hides
   Chrome's download bubble (so it doesn't pop up once per file) and shows it again when the job
   ends. If you turn on *Catch .zip downloads* (off by default), the extension notices when the
-  browser starts downloading a `.zip`, cancels that download and offers it to LinkUnzip instead.
-  Your other downloads are ignored.
+  browser starts downloading a `.zip`, pauses that download and offers it to LinkUnzip instead.
+  Once LinkUnzip has extracted the files it cancels the paused download; you can also let Chrome
+  continue it. Your other downloads are ignored.
 - **Copy details**: after an error, this button copies the versions, your operating system and
   browser version, which engine was used (the browser or the helper), the error code, HTTP status,
   the host name and the technical error text to your clipboard. Web addresses are cut down to their
@@ -101,7 +111,8 @@ all of them only on your PC:
   browser login* above). Your browser sends them only to that site; with the optional helper, the
   extension passes them to the helper, which sends them only to that site.
 - **Web history:** the link you chose and the address of the page it was on, kept in the job state
-  on your PC. The page address is only passed on to the helper, if you use it.
+  on your PC, and the link with the zip's index for at most a week (see *What is stored* above).
+  The page address is only passed on to the helper, if you use it.
 - **Website content:** the `.zip` links on the page you are on, read when you open the toolbar
   popup so it can list them, and the files of the zip you extract or preview, which are saved or
   shown only on your PC.
@@ -119,11 +130,21 @@ LinkUnzip project or anyone else.
   GitHub's own privacy policy.
 - No analytics, crash reporting, update checks or remote code. Updates to the extension come
   through the browser's extension store.
+- From version 1.1.1, when you remove the extension, the browser opens
+  <https://linkunzip.app/uninstalled> in a new tab. The address carries the extension's version
+  number (for example `?v=1.1.1`) and nothing else. The page asks why you removed LinkUnzip.
+  Answering is optional: if you click *Send*, the site saves the reason you picked, the text you
+  typed, that version number and the date, and nothing else (no name, no IP address, no cookies).
+  To stop floods of fake answers, Cloudflare counts the answers from each IP address for one
+  minute (at most 3); the address is only used for that count and is not saved. Answers are kept in the project's storage at Cloudflare, the company that serves linkunzip.app,
+  are only used to decide what to fix, and are deleted after two years at the latest. Details:
+  <https://linkunzip.app/privacy#feedback>.
 
 ## Sharing and selling
 
-LinkUnzip does not sell, rent, share or transfer any data, does not use data for advertising or
-credit decisions, and has no servers that could receive it.
+LinkUnzip does not sell, rent, share or transfer any data and does not use data for advertising or
+credit decisions. The only data the project receives is an answer you choose to send from the
+removal page, and it is never shared or sold.
 
 ## Removing everything
 

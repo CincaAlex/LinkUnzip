@@ -1,22 +1,28 @@
 // The browser engine: answers the same messages as the native helper (src/host.rs), so the
 // popup and the background treat both alike.
 //
-// Requests: hello, inspect, list, search, measure, extract, cancel, entry.
-// Replies: hello, inspected, listing, search_results, measured, started, progress, done,
-// cancelled, entry, error. Every reply carries the request's `id`.
+// Requests: hello, inspect, list, search, measure, extract, cancel, entry, neighbors,
+// tick_matches. Replies: hello, index_progress, inspected, listing, search_results, measured,
+// started, progress, done, cancelled, entry, neighbors, ticked, error. Every reply carries the
+// request's `id`.
+//
+// The file list's selection comes as its ticks (`select: {marks}`, the nearest mark wins); the
+// helper's `{paths, exclude}` still works.
 
 import { Coded, describe } from "./errors.js";
 import { extract } from "./extract.js";
-import { Filter } from "./plan.js";
+import { Filter, regionEndOf } from "./plan.js";
 import { Source } from "./source.js";
 import { heldBackType } from "./dl-sink.js";
 import { Tree, heldBack } from "./tree.js";
-import { isDir, readIndex, unsupportedReason } from "./zip.js";
+import { indexFromRaw, isDir, readIndex, unsupportedReason } from "./zip.js";
 
 export const PROTOCOL = 2;
-export const FEATURES = ["list", "search", "measure", "select", "resume", "error_codes", "preview"];
+export const FEATURES = ["list", "search", "measure", "select", "resume", "error_codes", "preview", "marks", "neighbors", "tick_matches", "index_progress"];
 /** Inspected archives kept for browsing; older ones are read again when asked about. */
 const KEEP_INSPECTED = 8;
+/** index_progress messages, at most this often. */
+const INDEX_PROGRESS_MS = 250;
 
 function hostOf(url) {
   try {
@@ -73,6 +79,8 @@ function report(src, index, tree) {
     unsupported: unsupported.length,
     unsupported_sample: unsupported.slice(0, 3),
     largest,
+    extensions: tree.extensions,
+    index_cached: Boolean(index.cached),
     ...heldBack(held),
   };
 }
@@ -80,8 +88,9 @@ function report(src, index, tree) {
 /**
  * `post(message)` sends a reply; `openSink(target, job)` turns an extract request's `target` into
  * a sink (fsa-sink.js or dl-sink.js), with a `label` for messages. `job` is the job's id.
+ * `indexCache` ({get, put}, store.js) keeps indexes read before, so they aren't downloaded again.
  */
-export function createEngine({ post, openSink, version = "0" }) {
+export function createEngine({ post, openSink, version = "0", indexCache = null }) {
   const inspected = new Map(); // id -> { src, index, tree }
   const running = new Map(); // id -> AbortController
 
@@ -107,12 +116,36 @@ export function createEngine({ post, openSink, version = "0" }) {
     }
   }
 
+  /** The index of `src`: from the cache when this exact version was read before, else fetched. */
+  async function loadIndex(src, onProgress) {
+    const key = src.identityKey();
+    if (key && indexCache) {
+      const raw = await indexCache.get(key).catch(() => null);
+      if (raw) {
+        try {
+          return { ...indexFromRaw(raw), cached: true };
+        } catch {
+          // A damaged entry: read the index again.
+        }
+      }
+    }
+    const index = await readIndex(src, { onProgress });
+    if (key && indexCache) indexCache.put(key, index.raw, { url: src.url, size: src.size }).catch(() => {});
+    return index;
+  }
+
   async function inspect({ id, url, credentials }) {
     const ctl = new AbortController();
     running.set(id, ctl);
     try {
       const src = await Source.probe(url, { credentials, signal: ctl.signal });
-      const index = await readIndex(src);
+      let last = 0;
+      const index = await loadIndex(src, (received, total) => {
+        const now = Date.now();
+        if (received && received < total && now - last < INDEX_PROGRESS_MS) return;
+        last = now;
+        reply("index_progress", id, { received, total });
+      });
       const tree = new Tree(index.entries);
       keep(id, { src, index, tree });
       reply("inspected", id, { report: report(src, index, tree) });
@@ -135,7 +168,7 @@ export function createEngine({ post, openSink, version = "0" }) {
       // The index read for the Cost Analysis is still good if the file didn't change since.
       const known = inspected.get(String(m.id).split(":")[0]);
       const same = known && known.src.url === m.url && known.src.size === src.size && known.src.etag === src.etag && known.src.lastModified === src.lastModified;
-      const index = same ? known.index : await readIndex(src);
+      const index = same ? known.index : await loadIndex(src);
       if (same) {
         // Still part of what this job downloaded, just earlier.
         src.indexBytes += known.src.indexBytes;
@@ -203,9 +236,21 @@ export function createEngine({ post, openSink, version = "0" }) {
           return withTree(m.id, ({ src, index, tree }) => {
             const e = tree.entryAt(m.path);
             if (!e) throw new Coded("bad_request", `there is no file ${JSON.stringify(m.path)} in the archive`);
-            let end = index.centralDirOffset;
-            for (const o of index.entries) if (o.offset > e.offset && o.offset < end) end = o.offset;
+            const end = regionEndOf(index)(e.offset);
             reply("entry", m.id, { path: m.path, source: src.toJSON(), entry: { ...e, regionEnd: end }, unsupported: unsupportedReason(e) });
+          });
+        case "neighbors":
+          // The viewer's Previous / Next: the files around this one in its folder.
+          return withTree(m.id, ({ tree }) => {
+            const n = tree.neighbors(m.path);
+            if (!n) throw new Coded("bad_request", `there is no file ${JSON.stringify(m.path)} in the archive`);
+            reply("neighbors", m.id, { path: m.path, ...n });
+          });
+        case "tick_matches":
+          // "Select all results": every file the search finds, ticked (or not) on top of the
+          // marks, said with as few marks as possible.
+          return withTree(m.id, ({ tree }) => {
+            reply("ticked", m.id, { query: m.query, ...tree.tickMatches(m.marks, m.query || "", m.ticked !== false) });
           });
         default:
           return fail(m?.id, new Coded("bad_request", `unknown request ${JSON.stringify(m?.type)}`));

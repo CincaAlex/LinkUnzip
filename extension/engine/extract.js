@@ -1,14 +1,23 @@
 // The extraction: one Range request per span of neighbouring files, a few spans at a time, each
 // file inflated, checked (size and CRC-32) and written as it arrives. A file only gets its real
 // name once it checked out (the sink's close); anything else is thrown away (abort).
+//
+// When the connection drops, a stored file goes on from the byte where it stopped (a new Range
+// request from there); a compressed one starts again, since the inflater can't pick up midway.
+//
+// Sinks may keep a record of finished files for Resume (`begin`, `finished`, `end`): the folder
+// sink writes the helper's .linkunzip-resume.jsonl, the Downloads sink remembers what it saved.
 
 import { crc32 } from "./crc32.js";
 import { entryChunks, seekToData } from "./entry.js";
 import { Coded, failed, isTransient } from "./errors.js";
 import { check, splitSpans } from "./plan.js";
 import { ByteReader, RETRY, delayAfter, sleep } from "./source.js";
+import { METHOD_STORED } from "./zip.js";
 
 const PROGRESS_MS = 250;
+/** A stored file that got this much further since its last drop counts its drops afresh. */
+const PROGRESS_RESET = 1 << 20;
 /**
  * Finished files whose close() may still be running. Chrome gives a file its name on close (a
  * round trip to the browser, plus its own checks), which costs milliseconds per file: letting the
@@ -72,10 +81,16 @@ class Stats {
   }
 }
 
-/** Is the file at `parts` already there with this entry's size and CRC-32? */
-async function alreadyDone(sink, file, signal) {
+/**
+ * Is the file at `parts` already there with this entry's size and CRC-32? `journalOnly`: only
+ * what the journal of an earlier run lists counts (a fresh start doesn't read files back).
+ */
+async function alreadyDone(sink, file, signal, journalOnly = false) {
   // A sink that can't read its files back knows itself what it saved.
-  if (sink.isDone) return sink.isDone(file.parts, file.entry);
+  if (sink.isDone) return !journalOnly && sink.isDone(file.parts, file.entry);
+  // Finished by an earlier run of this same archive (its journal says so) and still there.
+  if (sink.journaled?.(file.entry) && (await sink.exists(file.parts))) return true;
+  if (journalOnly) return false;
   const size = await sink.stat(file.parts);
   if (size !== file.entry.usize) return false;
   let crc = 0;
@@ -83,8 +98,18 @@ async function alreadyDone(sink, file, signal) {
     if (signal.aborted) throw signal.reason;
     crc = crc32(crc, chunk);
   }
-  return crc === file.entry.crc;
+  if (crc !== file.entry.crc) return false;
+  sink.finished?.(file);
+  return true;
 }
+
+/** The archive's identity as the helper's resume journal writes it (src/resume.rs). */
+const identityOf = (src) => ({
+  v: 1,
+  size: src.size,
+  etag: src.etag ? src.etag.trim().replace(/^W\//, "") : null,
+  last_modified: src.lastModified || null,
+});
 
 async function mapLimit(items, limit, fn) {
   const out = new Array(items.length);
@@ -104,16 +129,32 @@ async function mapLimit(items, limit, fn) {
  * `onProgress` gets a progress message about four times a second.
  */
 export async function extract({ src, index, filter, sink, jobs = 4, resume = false, signal, onProgress = () => {} }) {
+  const checked = check(index, filter);
+  const begun = await sink.begin?.({ key: src.identityKey?.() ?? null, identity: identityOf(src), resume });
+  // A fresh start into a folder an unfinished run of this same zip left behind carries on too:
+  // the files its journal lists are skipped.
+  const earlier = !resume && begun?.earlier > 0;
+  let summary;
+  try {
+    summary = await run({ src, checked, sink, jobs, resume: resume || earlier, journalOnly: earlier, signal, onProgress });
+  } catch (e) {
+    await sink.end?.(false).catch(() => {});
+    throw e;
+  }
+  await sink.end?.(true).catch(() => {});
+  return summary;
+}
+
+async function run({ src, checked, sink, jobs, resume, journalOnly, signal, onProgress }) {
   const inner = new AbortController();
   const stop = () => inner.abort(signal.reason);
   if (signal.aborted) stop();
   signal.addEventListener("abort", stop, { once: true });
 
-  const checked = check(index, filter);
   let files = checked.files;
   const skipped = { files: 0, compressed: 0, extracted: 0 };
   if (resume) {
-    const done = await mapLimit(files, 4, (f) => alreadyDone(sink, f, inner.signal).catch(() => false));
+    const done = await mapLimit(files, 4, (f) => alreadyDone(sink, f, inner.signal, journalOnly).catch(() => false));
     const keep = [];
     files.forEach((f, i) => {
       if (!done[i]) return keep.push(f);
@@ -134,10 +175,11 @@ export async function extract({ src, index, filter, sink, jobs = 4, resume = fal
 
   // A verified file is handed over here; its close() runs while the next file streams in.
   const closing = new Set();
-  const finish = async (out) => {
+  const finish = async (out, file) => {
     const p = out.close().then(
       () => {
         stats.filesDone += 1;
+        sink.finished?.(file);
       },
       (e) => {
         if (!firstError) firstError = e;
@@ -154,24 +196,38 @@ export async function extract({ src, index, filter, sink, jobs = 4, resume = fal
     try {
       for (const file of span.files) {
         stats.active.add(file.entry.name);
+        // What survives a dropped connection: the open file and how far it got (stored files).
+        const carry = { out: null, crc: 0, written: 0, dataStart: 0, downloaded: 0, extracted: 0 };
         for (let attempt = 1; ; attempt++) {
           const tally = { downloaded: 0, extracted: 0 };
           try {
             if (!reader) {
               stats.requests += 1;
-              const resp = await src.openRange(file.entry.offset, span.end, inner.signal);
-              reader = new ByteReader(resp.body, file.entry.offset);
+              const from = carry.out ? carry.dataStart + carry.written : file.entry.offset;
+              const resp = await src.openRange(from, span.end, inner.signal);
+              reader = new ByteReader(resp.body, from);
             }
-            await extractEntry(reader, file, sink, stats, tally, inner.signal, finish);
+            await extractEntry(reader, file, sink, stats, tally, inner.signal, finish, carry);
             break;
           } catch (e) {
             reader?.cancel();
             reader = null;
-            stats.downloaded -= tally.downloaded;
-            stats.extracted -= tally.extracted;
-            if (isTransient(e) && attempt < RETRY.attempts && !inner.signal.aborted) {
+            const again = isTransient(e) && attempt < RETRY.attempts && !inner.signal.aborted;
+            if (again && carry.out && file.entry.method === METHOD_STORED) {
+              // Keep what arrived; the next request starts where it stopped.
+              carry.downloaded += tally.downloaded;
+              carry.extracted += tally.extracted;
+              if (tally.downloaded >= PROGRESS_RESET) attempt = 0;
+            } else {
+              stats.downloaded -= tally.downloaded + carry.downloaded;
+              stats.extracted -= tally.extracted + carry.extracted;
+              Object.assign(carry, { downloaded: 0, extracted: 0 });
+              if (carry.out) await carry.out.abort();
+              carry.out = null;
+            }
+            if (again) {
               stats.retries += 1;
-              await sleep(delayAfter(attempt), inner.signal);
+              await sleep(delayAfter(Math.max(1, attempt)), inner.signal);
               continue;
             }
             if (e instanceof Coded && !e.detail?.startsWith("extracting")) {
@@ -234,43 +290,48 @@ export async function extract({ src, index, filter, sink, jobs = 4, resume = fal
   };
 }
 
-async function extractEntry(reader, file, sink, stats, tally, signal, finish) {
+/**
+ * One file: positioned on its local header (or, carrying on after a drop, on the next byte of its
+ * data), streamed, checked and handed to `finish`. On failure the file stays open in `carry`; the
+ * caller decides whether it goes on or is thrown away.
+ */
+async function extractEntry(reader, file, sink, stats, tally, signal, finish, carry) {
   const entry = file.entry;
-  await seekToData(reader, entry);
-  const out = await sink.create(file.parts, entry);
-  let crc = 0;
-  let written = 0;
+  if (!carry.out) {
+    await seekToData(reader, entry);
+    carry.dataStart = reader.pos;
+    carry.out = await sink.create(file.parts, entry);
+    carry.crc = 0;
+    carry.written = 0;
+  }
+  const out = carry.out;
   const onData = (n) => {
     stats.downloaded += n;
     tally.downloaded += n;
   };
   try {
-    try {
-      for await (const chunk of entryChunks(reader, entry, onData)) {
-        if (signal.aborted) throw signal.reason;
-        written += chunk.length;
-        if (written > entry.usize) {
-          throw failed(`the data expands beyond the ${entry.usize} bytes declared for this entry (zip bomb or corrupt archive)`);
-        }
-        crc = crc32(crc, chunk);
-        stats.extracted += chunk.length;
-        tally.extracted += chunk.length;
-        await out.write(chunk);
+    for await (const chunk of entryChunks(reader, entry, onData, carry.written)) {
+      if (signal.aborted) throw signal.reason;
+      if (carry.written + chunk.length > entry.usize) {
+        throw failed(`the data expands beyond the ${entry.usize} bytes declared for this entry (zip bomb or corrupt archive)`);
       }
-    } catch (e) {
-      // Padding after a complete deflate stream: fine when everything else checks out.
-      if (!(e.junk && written === entry.usize && crc === entry.crc)) throw e;
-    }
-    if (written !== entry.usize) {
-      throw failed(`size mismatch: the entry says ${entry.usize} bytes, the data gave ${written}`);
-    }
-    if (crc !== entry.crc) {
-      throw failed(`CRC-32 mismatch (expected ${entry.crc.toString(16).padStart(8, "0")}, got ${crc.toString(16).padStart(8, "0")}): the data is corrupt`);
+      await out.write(chunk);
+      carry.written += chunk.length;
+      carry.crc = crc32(carry.crc, chunk);
+      stats.extracted += chunk.length;
+      tally.extracted += chunk.length;
     }
   } catch (e) {
-    await out.abort();
-    throw e;
+    // Padding after a complete deflate stream: fine when everything else checks out.
+    if (!(e.junk && carry.written === entry.usize && carry.crc === entry.crc)) throw e;
+  }
+  if (carry.written !== entry.usize) {
+    throw failed(`size mismatch: the entry says ${entry.usize} bytes, the data gave ${carry.written}`);
+  }
+  if (carry.crc !== entry.crc) {
+    throw failed(`CRC-32 mismatch (expected ${entry.crc.toString(16).padStart(8, "0")}, got ${carry.crc.toString(16).padStart(8, "0")}): the data is corrupt`);
   }
   // Checked: from here on the file only needs its name (close), which may finish later.
-  await finish(out);
+  carry.out = null;
+  await finish(out, file);
 }

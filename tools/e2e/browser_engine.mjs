@@ -229,6 +229,13 @@ async function main() {
       await send("dismiss", { id: jid });
     }
 
+    // The same zip again: its index comes from the cache (IndexedDB), nothing more downloaded.
+    if (!ONLY.length) {
+      const { id: cj2 } = await send("inspect", { url: `${BASE}/small.zip` });
+      const cached = await until(cj2, ["ready", "error"]);
+      check(cached?.report?.index_cached === true && cached.report.index_bytes < 10_000, `index cache: small.zip opened again from the cache (${cached?.report?.index_bytes} index bytes)`);
+      await send("dismiss", { id: cj2 });
+    }
 
 
     // Preview.
@@ -311,6 +318,54 @@ async function main() {
     const leftovers = (await listOut("cancel-test")).filter((f) => f.endsWith(".crswap"));
     check(leftovers.length === 0, "cancel: no temp files left");
     void cr;
+
+    // The resume journal (the helper's .linkunzip-resume.jsonl): after a stop it lists what was
+    // finished, Resume skips those without reading them back, and it goes once the job is done.
+    const { id: rj } = await send("inspect", { url: `${BASE}/many.zip` });
+    await until(rj, ["ready", "error"]);
+    const subset = { marks: { "": false, "many/d000/": true, "many/d001/": true, "many/d002/": true } };
+    await send("extract", { id: rj, target: { key: "base", sub: "journal-test" }, output: "x", select: subset, connections: 1 });
+    for (let i = 0; i < 200 && ((await job(rj))?.progress?.files_done || 0) < 300; i++) await sleep(100);
+    await send("cancel", { id: rj });
+    const rstop = await until(rj, ["cancelled", "error", "done"], 30000);
+    const journalText = await page.evaluate(async () => {
+      const base = await (await navigator.storage.getDirectory()).getDirectoryHandle("LinkUnzip");
+      const dir = await base.getDirectoryHandle("journal-test");
+      try {
+        return await (await (await dir.getFileHandle(".linkunzip-resume.jsonl")).getFile()).text();
+      } catch {
+        return "";
+      }
+    });
+    const jlines = journalText.split("\n").filter(Boolean);
+    const identity = jlines.length ? JSON.parse(jlines[0]) : {};
+    const stoppedAt = rstop?.result?.files_done || 0;
+    check(rstop?.phase === "cancelled" && identity.v === 1 && identity.size > 0 && jlines.length - 1 >= stoppedAt, `journal: stopped after ${stoppedAt} files, the journal lists ${jlines.length - 1} (identity size ${identity.size})`);
+    const tr = Date.now();
+    await send("resume", { id: rj });
+    const rdone = await until(rj, ["done", "error"], 300000);
+    const leftJournal = (await listOut("journal-test")).includes(".linkunzip-resume.jsonl");
+    check(rdone?.phase === "done" && rdone.result.skipped_existing >= stoppedAt && rdone.result.verified_files === 2100 && !leftJournal, `journal: Resume skipped ${rdone?.result?.skipped_existing} without reading them back, wrote ${rdone?.result?.files} (${Date.now() - tr} ms); journal gone: ${!leftJournal}`, JSON.stringify(rdone?.error));
+
+    // The stopped job closed, the zip opened again, Start (not Resume) into the same folder: the
+    // journal left there still lets it skip what was finished.
+    const { id: fj } = await send("inspect", { url: `${BASE}/many.zip` });
+    await until(fj, ["ready", "error"]);
+    await send("extract", { id: fj, target: { key: "base", sub: "journal-fresh" }, output: "x", select: subset, connections: 1 });
+    for (let i = 0; i < 200 && ((await job(fj))?.progress?.files_done || 0) < 300; i++) await sleep(100);
+    await send("cancel", { id: fj });
+    const fstop = await until(fj, ["cancelled", "error", "done"], 30000);
+    await send("dismiss", { id: fj });
+    const { id: fj2 } = await send("inspect", { url: `${BASE}/many.zip` });
+    await until(fj2, ["ready", "error"]);
+    await send("extract", { id: fj2, target: { key: "base", sub: "journal-fresh" }, output: "x", select: subset, connections: 1 });
+    const fdone = await until(fj2, ["done", "error"], 300000);
+    const fstopped = fstop?.result?.files_done || 0;
+    check(
+      fstop?.phase === "cancelled" && fdone?.phase === "done" && fdone.result.skipped_existing >= fstopped && fdone.result.verified_files === 2100 && !(await listOut("journal-fresh")).includes(".linkunzip-resume.jsonl"),
+      `journal: after closing the stopped job, a fresh Start into the same folder skipped ${fdone?.result?.skipped_existing} of the ${fstopped} finished files`,
+      JSON.stringify(fdone?.error),
+    );
 
     // Extract in the toolbar popup (here: popup.html without ?window=1) hands over to the
     // LinkUnzip window: with a folder Chrome needs nothing for, it starts there by itself.
@@ -471,11 +526,49 @@ async function main() {
     await send("cancel", { id: mmj });
     const mc = await until(mmj, ["cancelled", "error", "done"], 60000);
     const doneBefore = mc?.result?.files_done || 0;
+    // The engine's page closes when idle, and with it what it remembered saving: Resume still
+    // knows from the record in IndexedDB.
+    await sleep(1500); // the record is written in batches
+    const swNow = await browser.waitForTarget((t) => t.type() === "service_worker" && t.url().includes(id), { timeout: 15000 });
+    await (await swNow.worker()).evaluate(() => chrome.offscreen.closeDocument().catch(() => {}));
+    await sleep(500);
     await send("resume", { id: mmj });
     const mr = await until(mmj, ["done", "error"], 300000);
-    check(mc?.phase === "cancelled" && doneBefore > 0 && mr?.phase === "done" && mr.result.skipped_existing >= doneBefore, `Downloads: stopped after ${doneBefore} files (worker stopped too), Resume skipped ${mr?.result?.skipped_existing} and saved ${mr?.result?.files}`, JSON.stringify(mc?.error || mr?.error));
+    check(mc?.phase === "cancelled" && doneBefore > 0 && mr?.phase === "done" && mr.result.skipped_existing >= doneBefore, `Downloads: stopped after ${doneBefore} files (worker stopped, engine page closed), Resume skipped ${mr?.result?.skipped_existing} and saved ${mr?.result?.files}`, JSON.stringify(mc?.error || mr?.error));
     const history2 = await page.evaluate(() => chrome.downloads.search({}).then((x) => x.length));
     check(history2 === 2, `Downloads: the download list is still clean after all that (${history2} entries: the 2 held files)`);
+
+    // Catch .zip downloads: Chrome's own download is paused, not cancelled (a link may only work
+    // once), and goes once LinkUnzip extracted the files. big.zip, so it is still running when
+    // LinkUnzip catches it.
+    const setCatch = (on) =>
+      page.evaluate(async (v) => {
+        const { loadSettings } = await import("./settings.js");
+        await chrome.storage.local.set({ settings: { ...(await loadSettings()), catchDownloads: v } });
+      }, on);
+    await setCatch(true);
+    const tab = await browser.newPage();
+    await tab.goto(`${BASE}/big.zip`).catch(() => {}); // a download, not a page
+    let caught = null;
+    for (let i = 0; i < 80 && !caught; i++) {
+      await sleep(250);
+      const s = await page.evaluate(() => chrome.storage.session.get(["jobs", "current"]));
+      const j = s.jobs?.[s.current];
+      if (j?.caught?.downloadId != null && j.url.endsWith("/big.zip")) caught = j;
+    }
+    const downloadOf = (i) => page.evaluate((x) => chrome.downloads.search({ id: x }).then((r) => r[0] || null), i);
+    const paused = caught ? await downloadOf(caught.caught.downloadId) : null;
+    check(Boolean(caught) && paused?.state === "in_progress" && paused.paused === true, `Catch .zip downloads: Chrome's download is paused, not cancelled (${paused?.state}, paused: ${paused?.paused})`);
+    if (caught) {
+      const cr2 = await until(caught.id, ["ready", "error"]);
+      await send("extract", { id: caught.id, target: cr2.target, output: cr2.output, connections: 4 });
+      const cd2 = await until(caught.id, ["done", "error"], 600000);
+      await sleep(800);
+      const after = await downloadOf(caught.caught.downloadId);
+      check(cd2?.phase === "done" && !after, `Catch .zip downloads: once extracted, the paused download is gone (${cd2?.phase}, ${after ? after.state : "erased"})`, JSON.stringify(cd2?.error));
+    }
+    await tab.close().catch(() => {});
+    await setCatch(false);
   } finally {
     await browser.close();
     server.kill();

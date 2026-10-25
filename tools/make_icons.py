@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Make every icon and logo image from the one source logo, logo/linkunzip-logo.png:
 
-- extension/icons/icon{16,32,48,128}.png (128 keeps the Chrome Web Store's 16 px margin)
+- extension/icons/icon{16,32,48,128}.png (128 keeps the Chrome Web Store's 16 px margin; 16 and 32
+  have the logo's lines painted light so the toolbar icon reads at that size)
 - logo/linkunzip-logo-256.png
 - resources/linkunzip.ico (the helper and the installer, see build.rs and installer/linkunzip.iss)
 - resources/wizard-{large,small}-{100,200}.bmp (the installer's side panel and header images)
@@ -41,6 +42,21 @@ def shrink(tile, size):
         rgb.putalpha(out.getchannel("A"))
         out = rgb
     return out
+
+
+def toolbar_icon(tile, size, grow):
+    """The toolbar sizes (16 and 32 px): the logo's own engraved lines painted light and a little
+    thicker, so the shape still reads that small on a dark tile. 48 px and up are the logo as is."""
+    gray = tile.convert("L")
+    darker = ImageChops.subtract(gray.filter(ImageFilter.GaussianBlur(6)), gray)
+    inside = tile.getchannel("A").filter(ImageFilter.MinFilter(41))  # not the tile's dark rim
+    lines = ImageChops.multiply(darker.point(lambda v: 255 if v > 10 else 0), inside)
+    lines = lines.filter(ImageFilter.MaxFilter(grow)).filter(ImageFilter.GaussianBlur(1.5))
+    paint = Image.new("RGBA", tile.size, (228, 228, 231, 0))
+    paint.putalpha(lines)
+    out = tile.copy()
+    out.alpha_composite(paint)
+    return shrink(out, size)
 
 
 def with_margin(tile, size, margin):
@@ -89,8 +105,9 @@ def write(img, path):
 def main():
     tile = load_tile()
 
-    for size in (16, 32, 48):
-        write(shrink(tile, size), os.path.join(ICONS, f"icon{size}.png"))
+    for size, grow in ((16, 7), (32, 3)):
+        write(toolbar_icon(tile, size, grow), os.path.join(ICONS, f"icon{size}.png"))
+    write(shrink(tile, 48), os.path.join(ICONS, "icon48.png"))
     write(with_margin(tile, 128, 16), os.path.join(ICONS, "icon128.png"))
     write(line_art(tile, 240), os.path.join(ICONS, "logo-lines.png"))
     write(shrink(tile, 256), os.path.join(LOGO, "linkunzip-logo-256.png"))

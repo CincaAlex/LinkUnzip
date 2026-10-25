@@ -315,8 +315,9 @@ function currentJob() {
 function render() {
   renderChip();
   const job = currentJob();
-  // The rating line is decided just after the job is done, so it redraws the Done view too.
-  const sig = job ? `${job.id}:${job.phase}${job.askRate ? ":rate" : ""}` : "pick";
+  // The rating line is decided just after the job is done, and an earlier unfinished run just
+  // after the index is read: either redraws the view.
+  const sig = job ? `${job.id}:${job.phase}${job.askRate ? ":rate" : ""}${job.earlier > 0 ? ":earlier" : ""}${job.caught ? ":caught" : ""}` : "pick";
   if (sig === drawn) {
     if (updater && job) updater(job);
     return;
@@ -506,22 +507,47 @@ function dismissBtn(label = "Close") {
 }
 
 function inspectingView(job) {
+  const note = h("p", { class: "muted small" }, "Only the end of the file is fetched, not the whole zip.");
+  // A big index (COCO's is about 12 MB) shows how far it got.
+  const fill = h("div", {});
+  const bar = h("div", { class: "progress-bar", role: "progressbar", "aria-label": "Reading the index", "aria-valuemin": "0", "aria-valuemax": "100", hidden: true }, fill);
   show(
     panel(
       h(
         "div",
         { class: "row" },
         h("div", { class: "spinner" }),
-        h(
-          "div",
-          {},
-          h("h1", {}, "Reading the index..."),
-          h("p", { class: "muted small" }, "Only the end of the file is fetched, not the whole zip."),
-        ),
+        h("div", {}, h("h1", {}, "Reading the index..."), note),
       ),
+      bar,
       h("div", { class: "file-head" }, h("span", { class: "name" }, job.name), h("span", { class: "meta" }, hostOf(job.url))),
     ),
+    caughtNotice(job),
     actionBar([dismissBtn("Cancel")]),
+  );
+  updater = (j) => {
+    const p = j.indexProgress;
+    if (!p?.total) return;
+    const pct = Math.min(100, Math.floor((p.received / p.total) * 100));
+    bar.hidden = false;
+    fill.style.width = `${pct}%`;
+    bar.setAttribute("aria-valuenow", String(pct));
+    note.textContent = `The zip's index: ${humanBytes(p.received)} of ${humanBytes(p.total)}. Only the index is fetched, not the whole zip.`;
+  };
+  updater(job);
+}
+
+/**
+ * A .zip download LinkUnzip caught is paused, not cancelled (a link may only work once): say so,
+ * and let Chrome carry on with it instead.
+ */
+function caughtNotice(job) {
+  if (job.caught?.downloadId == null) return null;
+  return h(
+    "div",
+    { class: "notice" },
+    h("p", { style: "margin:0 0 6px" }, "Chrome's download of this zip is paused. It is cancelled once LinkUnzip has extracted the files; close this to leave it paused in Chrome's downloads."),
+    h("button", { class: "link", type: "button", onclick: () => send("continueDownload", { id: job.id }) }, "Continue the download instead"),
   );
 }
 
@@ -581,6 +607,7 @@ function readyView(job) {
   });
 
   let selection = null; // from the file list: all, none, or select (+ measured)
+  const nothing = () => Boolean(selection?.none) || selection?.measured?.files === 0;
   // With a measured selection, what has to fit is what will be written, not the whole zip.
   const fitsNow = () => {
     const m = selection?.measured;
@@ -593,7 +620,7 @@ function readyView(job) {
     if (windowMode && pendingFor(job) && !isDownloads(d.target)) return d.target ? "Allow and start extraction" : "Choose folder and start";
     const some = Boolean(d.include.trim()) || (selection && !selection.all);
     const verb = some ? "Start Filtered Extraction" : "Start Extraction";
-    if (selection?.none || d.include.trim()) return verb;
+    if (nothing() || d.include.trim()) return verb;
     const m = selection?.measured || (!selection || selection.all ? { files: r.files, extracted: r.extracted } : null);
     return m ? `${verb} (${m.files.toLocaleString()} ${m.files === 1 ? "file" : "files"}, ${humanBytes(m.extracted)})` : verb;
   };
@@ -622,29 +649,37 @@ function readyView(job) {
     slow.replaceChildren(text, h("button", { class: "link", type: "button", onclick: () => view.querySelector(".folder-row .btn")?.click() }, "Choose a folder..."));
   };
   const updateGo = () => {
-    go.disabled = Boolean(selection?.none) || (!fitsNow() && !d.force);
+    go.disabled = nothing() || (!fitsNow() && !d.force);
     go.textContent = goLabel();
     updateSlow();
   };
-  go.addEventListener("click", async () => {
+  const request = (resume = false) => ({
+    include: d.include.split(",").map((s) => s.trim()).filter(Boolean),
+    select: selection?.select,
+    connections: settings.connections,
+    force: !fitsNow() && d.force,
+    resume,
+  });
+  const extractNow = async (resume) => {
     problem.hidden = true;
-    if (selection?.none) {
+    if (nothing()) {
       problem.textContent = "Tick at least one file to extract.";
       problem.hidden = false;
       return;
     }
-    await startExtraction(
-      job,
-      d,
-      {
-        include: d.include.split(",").map((s) => s.trim()).filter(Boolean),
-        select: selection?.select,
-        connections: settings.connections,
-        force: !fitsNow() && d.force,
-      },
-      problem,
-    );
-  });
+    await startExtraction(job, d, request(resume), problem);
+  };
+  go.addEventListener("click", () => extractNow(false));
+  // An earlier extraction of this same zip into Downloads stopped part way: carry on from there.
+  const earlier =
+    job.earlier > 0
+      ? h(
+          "div",
+          { class: "notice earlier", hidden: !isDownloads(d.target) },
+          h("p", { style: "margin:0 0 6px" }, `An earlier extraction of this zip into Downloads stopped after ${job.earlier.toLocaleString()} ${job.earlier === 1 ? "file" : "files"}. Resume skips what it already saved.`),
+          h("button", { class: "link", type: "button", onclick: () => extractNow(true) }, "Resume it"),
+        )
+      : null;
   // Sent here from the toolbar popup, and Chrome still has to ask something: say what.
   if (windowMode && pendingFor(job) && !isDownloads(d.target)) {
     go.textContent = goLabel();
@@ -659,7 +694,7 @@ function readyView(job) {
   // ticked, or while measuring, it keeps what it showed.
   let cost = costSection(r);
   const updateCost = () => {
-    if (selection?.none || (selection && !selection.all && !selection.measured)) return;
+    if (nothing() || (selection && !selection.all && !selection.measured)) return;
     const next = costSection(r, selection?.all ? null : selection?.measured);
     cost.replaceWith(next);
     cost = next;
@@ -717,12 +752,13 @@ function readyView(job) {
       ? fileList({
           job,
           draft: d,
-          features: { search: hasFeature("search"), measure: hasFeature("measure"), preview: hasFeature("preview") },
+          features: { search: hasFeature("search"), measure: hasFeature("measure"), preview: hasFeature("preview"), tickMatches: hasFeature("tick_matches") },
           api: {
             list: (dir, offset, limit) => send("list", { id: job.id, dir, offset, limit }),
             search: (query) => send("search", { id: job.id, query }),
             measure: (select) => send("measure", { id: job.id, select }),
             preview: (path) => send("preview", { id: job.id, path }),
+            tickMatches: (marks, query, ticked) => send("tickMatches", { id: job.id, marks, query, ticked }),
           },
           onChange: (sel) => {
             selection = sel;
@@ -746,7 +782,9 @@ function readyView(job) {
 
   const bar = actionBar([
     go,
-    h("button", { class: "btn", onclick: () => send("downloadNormally", { url: job.url }) }, "Download Normal ZIP (Fallback)"),
+    job.caught?.downloadId != null
+      ? h("button", { class: "btn", onclick: () => send("continueDownload", { id: job.id }) }, "Continue Download")
+      : h("button", { class: "btn", onclick: () => send("downloadNormally", { url: job.url }) }, "Download Normal ZIP (Fallback)"),
     h("button", { class: "btn cancel", onclick: () => send("dismiss", { id: job.id }) }, "Cancel"),
   ]);
   bar.prepend(...[force, slow, problem].filter(Boolean));
@@ -759,10 +797,13 @@ function readyView(job) {
       ? h("p", { class: "notice" }, `${r.unsupported} file(s) use encryption or a compression LinkUnzip cannot read (e.g. ${r.unsupported_sample[0].name}). ${chooser ? "Untick them or use" : "Use"} the filter to skip them.`)
       : null,
     filter,
+    caughtNotice(job),
+    earlier,
     folderField("Extract into", d, job, {
       compact: true,
       onChange: () => {
         problem.hidden = true;
+        if (earlier) earlier.hidden = !isDownloads(d.target);
         updateGo();
       },
     }),
@@ -1243,6 +1284,10 @@ function askForAccess(job, note) {
   );
 }
 
+/** Whether Chrome's optional cookies permission is already granted (checked when the popup opens). */
+let cookiesGranted = false;
+chrome.permissions.contains({ permissions: ["cookies"] }).then((v) => (cookiesGranted = v), () => {});
+
 function errorView(job) {
   const e = job.error || { code: "failed", message: "Something went wrong." };
   const info = describeError(job, e);
@@ -1265,7 +1310,16 @@ function errorView(job) {
           );
         },
       }, "Allow every site"),
-    stream: () => h("button", { onclick: () => send("extract", { id: job.id, include: [], connections: 1, stream: true }) }, "Stream it anyway"),
+    stream: () =>
+      h("button", {
+        onclick: () => {
+          const go = () => send("extract", { id: job.id, include: [], connections: 1, stream: true });
+          // The helper needs the site's cookies when the user's login goes along: Chrome's
+          // optional cookies permission is asked for right here, in the click, only then.
+          if (!job.loginSent || cookiesGranted) return go();
+          chrome.permissions.request({ permissions: ["cookies"] }).then(go, go);
+        },
+      }, "Stream it anyway"),
     // The same extraction as before, into the folder now in the field.
     extractHere: () =>
       h("button", {
@@ -1277,7 +1331,12 @@ function errorView(job) {
     resume: () => h("button", { onclick: () => startExtraction(job, d, { ...extractAgain(job), resume: true }, problem) }, "Resume"),
     open: () => (web ? h("button", { onclick: () => chrome.tabs.create({ url: job.url }) }, "Open link") : null),
     page: () => h("button", { onclick: () => chrome.tabs.create({ url: job.pageUrl }) }, "Open the page"),
-    download: () => (web ? h("button", { onclick: () => send("downloadNormally", { url: job.url }) }, "Download normally") : null),
+    download: () =>
+      job.caught?.downloadId != null
+        ? h("button", { onclick: () => send("continueDownload", { id: job.id }) }, "Continue the download")
+        : web
+          ? h("button", { onclick: () => send("downloadNormally", { url: job.url }) }, "Download normally")
+          : null,
     copy: () => copyDetailsBtn(job, e, "btn"),
   };
   // An extraction that failed part way can carry on where it stopped (not for setup problems).
@@ -1414,6 +1473,14 @@ function setupSettings() {
       chrome.permissions.remove(ALL_SITES).catch(() => {});
     }
   });
+  const clearCache = document.getElementById("clear-cache");
+  clearCache.addEventListener("click", async () => {
+    clearCache.disabled = true;
+    await send("clearCache");
+    clearCache.textContent = "Forgotten";
+    announce("The kept zip indexes were removed.");
+  });
+
   const toggle = (open) => {
     panel.hidden = !open;
     document.body.classList.toggle("settings-open", open);

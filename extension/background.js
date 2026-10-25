@@ -12,10 +12,11 @@
 //
 // Both answer the same messages (see src/host.rs and engine/engine.js).
 
-import { REVIEW_URL, rateCheck } from "./config.js";
-import { folderLabel, getFolder } from "./folder.js";
+import { REVIEW_URL, UNINSTALL_URL, rateCheck } from "./config.js";
+import { folderLabel, getFolder, removeFolder } from "./folder.js";
 import { fileNameFromUrl, folderNameFor, humanBytes, joinPath, sitePattern } from "./fmt.js";
 import { loadSettings, migrate } from "./settings.js";
+import { indexCache, savedCount } from "./store.js";
 
 const HOST = "com.linkunzip.host";
 const MENU_ID = "linkunzip-extract-link";
@@ -29,6 +30,7 @@ let engineInfo = null;
 let engineWaiters = [];
 const jobs = new Map(); // job id -> job
 const bypass = new Map(); // url -> expiry: downloads we started ourselves ("download normally")
+let currentId = null; // the job the popup shows
 
 const ready = restore();
 
@@ -37,7 +39,8 @@ const ready = restore();
 // ---------------------------------------------------------------------------------------
 
 async function restore() {
-  const { jobs: saved = {}, hostInfo: savedInfo = null } = await chrome.storage.session.get(["jobs", "hostInfo"]);
+  const { jobs: saved = {}, hostInfo: savedInfo = null, current = null } = await chrome.storage.session.get(["jobs", "hostInfo", "current"]);
+  currentId = current;
   const restartedAt = Date.now();
   for (const [id, job] of Object.entries(saved)) {
     // The helper's process ends with this worker, so its jobs are lost. The browser engine's
@@ -69,18 +72,47 @@ async function restore() {
 /** How long a running engine job may stay silent after the worker restarted. */
 const ORPHAN_WAIT_MS = 10_000;
 
+// The popup redraws from storage.session. A job that moved on is written soon; while only its
+// numbers change (progress), not more than about once a second: each write is the whole map.
+const PERSIST_MS = 150;
+const PROGRESS_PERSIST_MS = 750;
 let persistTimer = null;
-function persist() {
-  if (persistTimer) return;
+let persistDue = 0;
+function persist(soon = true) {
+  const wait = soon ? PERSIST_MS : PROGRESS_PERSIST_MS;
+  if (persistTimer && persistDue <= Date.now() + wait) return;
+  clearTimeout(persistTimer);
+  persistDue = Date.now() + wait;
   persistTimer = setTimeout(async () => {
     persistTimer = null;
+    prune();
     await chrome.storage.session.set({ jobs: Object.fromEntries(jobs), hostInfo, hostError, engineInfo });
-  }, 150);
+  }, wait);
+}
+
+// Finished jobs stay until closed, but not forever: the newest KEEP_JOBS that aren't running, none
+// idle for longer than a day (the one on screen always stays).
+const KEEP_JOBS = 10;
+const JOB_MAX_IDLE_MS = 24 * 60 * 60 * 1000;
+const lastActive = (job) => Math.max(job.seenAt || 0, job.startedAt || 0, job.createdAt || 0);
+
+function prune() {
+  const idle = [...jobs.values()].filter((j) => !running(j) && j.id !== currentId).sort((a, b) => lastActive(b) - lastActive(a));
+  idle.forEach((job, i) => {
+    if (i >= KEEP_JOBS || Date.now() - lastActive(job) > JOB_MAX_IDLE_MS) forget(job.id);
+  });
+}
+
+/** A job and what belongs to it alone: a folder picked just for it. */
+function forget(id) {
+  jobs.delete(id);
+  removeFolder(`job:${id}`);
 }
 
 const getSettings = loadSettings;
 
 async function setCurrent(id) {
+  currentId = id;
   await chrome.storage.session.set({ current: id });
 }
 
@@ -342,9 +374,15 @@ function onReply(msg) {
   if (msg.type === "inspected" && job.phase !== "inspecting") return;
 
   switch (msg.type) {
+    case "index_progress":
+      if (job.phase !== "inspecting") return;
+      job.indexProgress = { received: msg.received, total: msg.total };
+      return persist(false);
     case "inspected":
       job.phase = "ready";
       job.report = msg.report;
+      job.indexProgress = null;
+      countEarlier(job);
       break;
     case "started":
       job.phase = "extracting";
@@ -354,13 +392,19 @@ function onReply(msg) {
       job.phase = job.phase === "extracting" || job.phase === "ready" ? "extracting" : job.phase;
       job.progress = msg;
       updateBadge(job);
+      if (job.phase === "extracting") {
+        syncDownloadUi();
+        return persist(false);
+      }
       break;
     case "done":
       job.phase = "done";
       job.result = msg;
+      job.earlier = 0;
       finishBadge("✓", "#2f9e6f");
       notifyDone(job);
       countForRating(job);
+      dropCaughtDownload(job);
       break;
     case "cancelled":
       job.phase = "cancelled";
@@ -380,6 +424,39 @@ function onReply(msg) {
       break;
   }
   syncDownloadUi();
+  persist();
+}
+
+/**
+ * Files an earlier, unfinished extraction of this same archive already saved into Downloads
+ * (store.js; the engine's Downloads sink keeps that record per archive version and zip folder).
+ */
+async function countEarlier(job) {
+  const r = job.report;
+  const etag = r?.etag && !/^\s*W\//.test(r.etag) ? r.etag.trim() : "";
+  const lm = r?.last_modified || "";
+  if (!r || (!etag && !lm)) return;
+  const run = [r.url, r.archive_size, etag, lm, folderNameFor(job.name)].join("\n");
+  const n = await savedCount(run).catch(() => 0);
+  if (n !== (job.earlier || 0)) {
+    job.earlier = n;
+    persist();
+  }
+}
+
+/**
+ * A .zip download LinkUnzip caught was paused, not cancelled (a link may only work once). Once
+ * the files are out, it goes; a download that had already finished stays where it is.
+ */
+async function dropCaughtDownload(job) {
+  const id = job.caught?.downloadId;
+  if (id == null) return;
+  const [item] = await chrome.downloads.search({ id }).catch(() => []);
+  if (item?.state === "in_progress") {
+    await chrome.downloads.cancel(id).catch(() => {});
+    await chrome.downloads.erase({ id }).catch(() => {});
+  }
+  job.caught = null;
   persist();
 }
 
@@ -578,13 +655,18 @@ async function credentialsFor(job) {
   return job.loginSent ? "include" : "omit";
 }
 
-/** Headers for the helper (stream mode): the site's cookies only with the user's go-ahead. */
+/**
+ * Headers for the helper (stream mode): the site's cookies only with the user's go-ahead, and
+ * only once Chrome's optional "cookies" permission was granted (the popup asks when it's needed).
+ */
 async function helperHeaders(job) {
   if (!(await loginAllowed(job.url))) return {};
   const headers = { "User-Agent": navigator.userAgent };
   try {
-    const cookies = await chrome.cookies.getAll({ url: job.url });
-    if (cookies.length) headers.Cookie = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    if (await chrome.permissions.contains({ permissions: ["cookies"] })) {
+      const cookies = await chrome.cookies.getAll({ url: job.url });
+      if (cookies.length) headers.Cookie = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    }
   } catch {
     // No access to that site's cookies: continue without.
   }
@@ -823,6 +905,33 @@ const commands = {
     const r = await askAboutJob(job, { type: "entry", id, path }, (m) => m.type === "entry" && m.path === path);
     return r.type === "entry" ? { ok: true, ...r, name: job.name } : { ok: false, error: r };
   },
+  // The viewer's Previous / Next.
+  async neighbors({ id, path }) {
+    const job = await readyJob(id);
+    if (!job) return { ok: false, error: { message: "That zip is no longer open in LinkUnzip." } };
+    const r = await askAboutJob(job, { type: "neighbors", id, path }, (m) => m.type === "neighbors" && m.path === path);
+    return r.type === "neighbors" ? { ok: true, prev: r.prev, next: r.next, position: r.position, total: r.total } : { ok: false, error: r };
+  },
+  // "Select all results" in the file list.
+  async tickMatches({ id, marks, query, ticked }) {
+    const job = await readyJob(id);
+    if (!job) return { ok: false, error: { message: "That job no longer exists." } };
+    const r = await askAboutJob(job, { type: "tick_matches", id, marks, query, ticked }, (m) => m.type === "ticked" && m.query === query);
+    return r.type === "ticked" ? { ok: true, marks: r.marks, matched: r.matched } : { ok: false, error: r };
+  },
+  async clearCache() {
+    await indexCache.clear().catch(() => {});
+    return { ok: true };
+  },
+  // A caught .zip download: let Chrome carry on with it after all, and put the job away.
+  async continueDownload({ id }) {
+    await ready;
+    const job = jobs.get(id);
+    const downloadId = job?.caught?.downloadId;
+    if (downloadId == null) return { ok: false };
+    await chrome.downloads.resume(downloadId).catch(() => {});
+    return commands.dismiss({ id });
+  },
   async preview({ id, path }) {
     const url = chrome.runtime.getURL(`viewer.html?job=${encodeURIComponent(id)}&path=${encodeURIComponent(path)}`);
     // Our own pages are listed without the "tabs" permission.
@@ -848,9 +957,12 @@ const commands = {
   },
   async dismiss({ id }) {
     await ready;
-    jobs.delete(id);
+    forget(id);
     const { current } = await chrome.storage.session.get("current");
-    if (current === id) await chrome.storage.session.remove("current");
+    if (current === id) {
+      currentId = null;
+      await chrome.storage.session.remove("current");
+    }
     persist();
     return { ok: true };
   },
@@ -929,6 +1041,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   chrome.contextMenus.create({ id: MENU_ID, title: "Extract with LinkUnzip", contexts: ["link"] });
+  // On install and on every update, so the version in the address stays current.
+  chrome.runtime.setUninstallURL(`${UNINSTALL_URL}?v=${chrome.runtime.getManifest().version}`);
   // First install: the welcome page asks for site access and the folder.
   if (reason === "install") chrome.tabs.create({ url: chrome.runtime.getURL("welcome.html") });
   // Settings saved by an older version: store them in today's shape.
@@ -952,10 +1066,12 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const expiry = bypass.get(item.url);
   if (expiry && expiry > Date.now()) return;
 
-  // Stop the browser's own download (and throw away whatever it already wrote) ...
-  await chrome.downloads.cancel(item.id).catch(() => {});
-  await chrome.downloads.removeFile(item.id).catch(() => {});
-  await chrome.downloads.erase({ id: item.id }).catch(() => {});
+  // Pause the browser's own download rather than cancel it: some links only work once, and the
+  // popup offers to continue it. It is cancelled once LinkUnzip extracted the files.
+  await chrome.downloads.pause(item.id).catch(() => {});
   // ... and show what LinkUnzip would do with it instead.
-  await openUiFor(item.url, item.referrer);
+  const job = await startInspect({ url: item.url, pageUrl: item.referrer });
+  job.caught = { downloadId: item.id };
+  persist();
+  await showPopup();
 });

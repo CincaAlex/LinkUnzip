@@ -24,8 +24,9 @@ keeps its older version until the next full release.
   files the folder holds. Before, folders with more than 5,000 entries refused it with a hint.
 - **Resume without starting over**: in a folder you chose, LinkUnzip keeps the helper's progress
   file (`.linkunzip-resume.jsonl`) while a job runs, and Resume skips the files it lists without
-  reading them back. Into Downloads, Resume still knows what was saved after LinkUnzip's background
-  page closed, and the popup offers to resume an earlier unfinished extraction of the same zip.
+  reading them back, also when the stopped job was closed and the zip started again into the same
+  folder. Into Downloads, Resume still knows what was saved after LinkUnzip's background page
+  closed, and the popup offers to resume an earlier unfinished extraction of the same zip.
 - **A dropped connection no longer restarts a stored file**: it carries on from the byte where it
   stopped. Compressed files still start again.
 - **Faster on big zips**: the totals of a selection add up whole folders (70,000 files: 0.4 ms

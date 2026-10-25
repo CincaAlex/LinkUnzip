@@ -262,23 +262,42 @@ export class Source {
     }
   }
 
-  /** Bytes start..end (inclusive) into memory, with retries. Counted as index bytes. */
-  async getBytes(start, end) {
+  /**
+   * Bytes start..end (inclusive) into memory, with retries. Counted as index bytes. `onData(n)`
+   * hears about every n bytes as they arrive (a retry starts again from the first byte).
+   */
+  async getBytes(start, end, onData = () => {}) {
     const len = end - start + 1;
     for (let attempt = 1; ; attempt++) {
+      let got = 0;
       try {
         this.indexRequests += 1;
         const resp = await this.openRange(start, end);
-        const reader = new ByteReader(resp.body, start);
+        const reader = new ByteReader(resp.body, start, (n) => {
+          got += n;
+          onData(n);
+        });
         const bytes = await reader.readExact(len);
         reader.cancel();
         this.indexBytes += len;
         return bytes;
       } catch (e) {
         if (!isTransient(e) || attempt >= RETRY.attempts) throw e;
+        onData(-got);
         await sleep(delayAfter(attempt), this.signal);
       }
     }
+  }
+
+  /**
+   * What names this exact version of the file, for the index cache: the size plus a strong ETag
+   * and/or Last-Modified. null when the server gives neither (then nothing is cached).
+   */
+  identityKey() {
+    const etag = this.etag && !/^\s*W\//.test(this.etag) ? this.etag.trim() : "";
+    const lm = this.lastModified || "";
+    if (!etag && !lm) return null;
+    return [this.url, this.size, etag, lm].join("\n");
   }
 }
 

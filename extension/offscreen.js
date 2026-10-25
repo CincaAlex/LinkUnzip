@@ -7,9 +7,11 @@ import { createEngine } from "./engine/engine.js";
 import { Coded } from "./engine/errors.js";
 import { folderSink } from "./engine/fsa-sink.js";
 import { folderLabel, folderPermission, getFolder } from "./folder.js";
+import { indexCache, runStore } from "./store.js";
 
 // What each job saved through Chrome's downloads (path -> "crc:size"), so Resume can skip it:
-// those files can't be read back. Kept while this page runs.
+// those files can't be read back. Kept while this page runs, and per archive in store.js, so
+// Resume still knows after this page was closed.
 const savedByJob = new Map();
 
 /**
@@ -24,6 +26,7 @@ async function openSink(target, job) {
       label: folderLabel("Downloads", target.sub),
       saved: savedByJob.get(job),
       save: (m) => saveFile({ cmd: "saveFile", job, ...m }),
+      store: runStore,
     });
   }
   const root = target?.key ? await getFolder(target.key) : null;
@@ -80,6 +83,7 @@ const engine = createEngine({
     port.postMessage(m);
   },
   openSink,
+  indexCache,
 });
 
 connect();

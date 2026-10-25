@@ -22,10 +22,12 @@ export async function seekToData(reader, entry) {
  * so the next entry stays in reach. `onData(n)` hears about every compressed byte consumed.
  * A deflate stream that ends before its last bytes (padding) raises an error with `junk` set;
  * the caller decides, from the size and CRC it saw, whether the file is complete.
+ * A stored entry can start `from` bytes into its data (the reader is already there): that is how
+ * a file goes on after the connection dropped.
  */
-export async function* entryChunks(reader, entry, onData = () => {}) {
+export async function* entryChunks(reader, entry, onData = () => {}, from = 0) {
   if (entry.method === METHOD_STORED) {
-    let left = entry.csize;
+    let left = entry.csize - from;
     while (left > 0) {
       const c = await reader.next(Math.min(left, CHUNK));
       left -= c.length;

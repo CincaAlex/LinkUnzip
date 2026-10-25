@@ -1,11 +1,11 @@
 // "Choose files" in the ready view: browse the zip's folders, tick what to extract, search by name
-// and see live totals. popup.js shows it only for a helper with `list` and `select`; `search` and
-// `measure` add the search box and the totals.
+// or pattern (`*.jpg`) and see live totals. popup.js shows it when the engine has `list` and
+// `select`; `search` and `measure` add the search box and the totals.
 //
 // The selection is kept as marks: path -> ticked or not, where a path is a file, a folder ending
-// in "/", or "" for the whole zip, and every entry follows its nearest marked parent. The helper
-// gets it as the protocol's `select`: an entry counts when it is at or under one of `paths` (none =
-// everything) and not at or under any of `exclude`.
+// in "/", or "" for the whole zip, and every entry follows its nearest marked parent. The engine
+// gets the marks as they are (`select: {marks}`) and applies the same rule, so any mix of ticks
+// can be said, however big the folders.
 //
 // Folders can hold 100,000+ files (COCO), so at most WINDOW rows are ever on the page, fetched a
 // page at a time.
@@ -15,8 +15,8 @@ import { humanBytes } from "./fmt.js";
 
 const PAGE = 500;
 const WINDOW = 2000; // rows on the page at most: "Show more" past that lets go of the first ones
-const BIG_PAGE = 2000; // the helper's largest page, for reading a whole folder
-const SPLIT_LIMIT = 5000; // see makeExpressible()
+/** File types offered as search chips (the most common ones in the zip). */
+const CHIPS = 4;
 
 // ---------------------------------------------------------------------------------------
 // The selection
@@ -60,26 +60,6 @@ export function setTicked(marks, path, ticked) {
   normalize(marks);
 }
 
-function markedParents(marks, path) {
-  let n = 0;
-  for (let p = parentOf(path); p !== null; p = parentOf(p)) if (p in marks) n += 1;
-  return n;
-}
-
-function nearestMarkedParent(marks, path) {
-  for (let p = parentOf(path); p !== null; p = parentOf(p)) if (p in marks) return p;
-  return null;
-}
-
-/**
- * A ticked mark `select` cannot say, because exclude wins: inside an unticked folder that is itself
- * inside a ticked one (the whole zip, or one of `paths`).
- */
-function firstIsland(marks) {
-  const limit = "" in marks ? 3 : 1;
-  return Object.keys(marks).find((k) => marks[k] && markedParents(marks, k) >= limit) ?? null;
-}
-
 /** "on", "off", or "mixed" for a folder with marks inside that differ from its own state. */
 function tickState(marks, keys, path) {
   const ticked = isTicked(marks, path);
@@ -87,41 +67,12 @@ function tickState(marks, keys, path) {
   return ticked ? "on" : "off";
 }
 
-/** The selection in the helper's terms: `all`, `none`, or `select: {paths, exclude}`. */
+/** The selection as the engine takes it: `all`, `none`, or `select: {marks}`. */
 export function toSelect(marks) {
-  const keys = Object.keys(marks).filter((k) => k !== "");
-  if (!("" in marks)) return keys.length ? { select: { paths: [], exclude: keys } } : { all: true };
-  const paths = keys.filter((k) => marks[k]);
-  if (!paths.length) return { none: true };
-  return { select: { paths, exclude: keys.filter((k) => !marks[k]) } };
-}
-
-/**
- * Make the marks sayable as `select`. Ticking a file inside an unticked folder needs the folder
- * replaced by its contents, each unticked except the way to what was ticked, level by level. That
- * needs every level's full listing; with more than SPLIT_LIMIT entries in one it gives up (false).
- */
-export async function makeExpressible(marks, listAll) {
-  for (let guard = 0; guard < 64; guard++) {
-    const island = firstIsland(marks);
-    if (island === null) return true;
-    if (!(await split(marks, nearestMarkedParent(marks, island), listAll))) return false;
-  }
-  return false;
-}
-
-async function split(marks, folder, listAll) {
-  const items = await listAll(folder);
-  if (!items) return false;
-  delete marks[folder]; // the folder follows its ticked parent now, and so do the islands in it ...
-  for (const item of items) {
-    if (item.path in marks) continue;
-    const holdsMarks = item.dir && Object.keys(marks).some((k) => inside(k, item.path));
-    marks[item.path] = false; // ... while the rest stays unticked
-    if (holdsMarks && !(await split(marks, item.path, listAll))) return false;
-  }
-  normalize(marks);
-  return true;
+  const keys = Object.keys(marks);
+  if (!keys.length) return { all: true };
+  if (marks[""] === false && !keys.some((k) => marks[k])) return { none: true };
+  return { select: { marks: { ...marks } } };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -132,22 +83,34 @@ const plural = (n, word, many = `${word}s`) => `${n.toLocaleString()} ${n === 1 
 const norm = (item) => (item.dir && !item.path.endsWith("/") ? { ...item, path: `${item.path}/` } : item);
 
 /**
- * `api.list(dir, offset, limit)`, `api.search(query)` and `api.measure(select)` answer like the
- * background commands; `onChange(selection)` hears every change (selection as from toSelect, plus
- * `measured` once known). `draft` keeps the marks, folder and search across popup reopens.
+ * `api.list(dir, offset, limit)`, `api.search(query)`, `api.measure(select)` and
+ * `api.tickMatches(marks, query, ticked)` answer like the background commands; `onChange(selection)`
+ * hears every change (selection as from toSelect, plus `measured` once known). `draft` keeps the
+ * marks, folder and search across popup reopens.
  */
 export function fileList({ job, draft, features, api, onChange, actions = [], toolbar = null }) {
   const report = job.report;
   const marks = (draft.marks ??= {});
   const st = { dir: draft.dir || "", query: draft.query || "", start: 0, items: [], total: 0, focus: 0 };
-  const full = new Map(); // folder -> every entry, for folders read in full by listAll()
   let rootListing = report.root_dirs ? (Array.isArray(report.root_dirs) ? { total: report.root_dirs.length, items: report.root_dirs } : report.root_dirs) : null;
 
   const summary = h("span", { class: "fl-sum" }, "All files");
   const search = features.search
-    ? h("input", { type: "search", class: "fl-search", placeholder: "Filter", "aria-label": "Filter: search file names in the zip", spellcheck: "false" })
+    ? h("input", { type: "search", class: "fl-search", placeholder: "Filter or *.jpg", "aria-label": "Filter: search file names in the zip, or a pattern like *.jpg", spellcheck: "false" })
     : null;
   if (search) search.value = st.query;
+  // One click to every file of a common type: "*.jpg" as the search.
+  const types = (report.extensions || []).slice(0, CHIPS);
+  const chips =
+    search && types.length >= 2
+      ? h(
+          "div",
+          { class: "fl-chips", role: "group", "aria-label": "Find files of one type" },
+          ...types.map(({ ext, files }) =>
+            h("button", { type: "button", class: "chip-btn", "data-q": `*.${ext}`, title: `${plural(files, `.${ext} file`)}`, "aria-pressed": "false" }, `*.${ext}`),
+          ),
+        )
+      : null;
   const crumbs = h("nav", { class: "fl-crumbs", "aria-label": "Folder" });
   const count = h("span", { class: "fl-count" });
   const allBtn = h("button", { type: "button", class: "link small" }, "Select all");
@@ -163,6 +126,7 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     "section",
     { class: "fl", "aria-label": "File list" },
     h("div", { class: "fl-head" }, h("h2", {}, "File List ", h("span", {}, "(Select files for extraction)")), search),
+    chips,
     toolbar,
     nav,
     notice,
@@ -181,21 +145,6 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     if (dir === "" && offset === 0 && rootListing && limit <= PAGE) return rootListing;
     const r = await api.list(dir, offset, limit);
     return r?.ok ? r.listing : failed(r);
-  }
-
-  /** Every entry of a folder (for makeExpressible), or null when it is too big. */
-  async function listAll(dir) {
-    if (full.has(dir)) return full.get(dir);
-    if (dir === st.dir && !st.query && st.start === 0 && st.items.length === st.total) return st.items;
-    const items = [];
-    for (;;) {
-      const page = await listPage(dir, items.length, BIG_PAGE);
-      if (!page || page.total > SPLIT_LIMIT) return null;
-      items.push(...page.items.map(norm));
-      if (items.length >= page.total || !page.items.length) break;
-    }
-    full.set(dir, items);
-    return items;
   }
 
   async function showFolder(dir, offset = 0) {
@@ -278,6 +227,12 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     rows.replaceChildren(...st.items.map((item, i) => row(item, i, keys)));
     if (!st.items.length) rows.append(h("p", { class: "fl-empty" }, st.query ? "No file names match." : "This folder is empty."));
     if (keepFocus) focusRow(st.focus);
+    // In search results, Select all / none cover every match, not only the rows on the page.
+    const wide = Boolean(st.query) && features.tickMatches && st.total > 0;
+    allBtn.textContent = wide ? `Select all ${st.total.toLocaleString()}` : "Select all";
+    allBtn.title = wide ? `Tick every file the search finds (${plural(st.total, "match", "matches")})` : "";
+    noneBtn.title = wide ? "Untick every file the search finds" : "";
+    if (chips) for (const b of chips.children) b.setAttribute("aria-pressed", String(b.dataset.q === st.query));
   }
 
   function row(item, i, keys) {
@@ -337,8 +292,7 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
 
   // ---- ticking ------------------------------------------------------------------------------
 
-  async function tick(paths, ticked) {
-    const before = { ...marks };
+  function tick(paths, ticked) {
     for (const p of paths) setTicked(marks, p, ticked);
     // Every entry of this folder ticked the same way one by one: say it with the folder itself.
     if (!st.query && st.start === 0 && st.items.length === st.total && st.items.length) {
@@ -346,14 +300,26 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
       const states = new Set(st.items.map((it) => tickState(marks, keys, it.path)));
       if (states.size === 1 && !states.has("mixed")) setTicked(marks, st.dir, states.has("on"));
     }
-    if (!(await makeExpressible(marks, listAll))) {
-      for (const k of Object.keys(marks)) delete marks[k];
-      Object.assign(marks, before);
-      showNotice("That folder is unticked as a whole and holds too many entries to keep only some of them. Tick the folder first, then untick what you don't need.");
-    }
     refreshTicks();
     changed();
   }
+
+  /** Select all / none in search results: every match, worked out by the engine. */
+  async function tickAllMatches(ticked) {
+    const query = st.query;
+    const r = await api.tickMatches({ ...marks }, query, ticked);
+    if (st.query !== query) return;
+    if (!r?.ok) return failed(r);
+    for (const k of Object.keys(marks)) delete marks[k];
+    Object.assign(marks, r.marks);
+    refreshTicks();
+    changed();
+  }
+
+  const selectAll = (ticked) => {
+    if (st.query && features.tickMatches) return tickAllMatches(ticked);
+    tick(st.query ? st.items.map((it) => it.path) : [st.dir], ticked);
+  };
 
   rows.addEventListener("change", (e) => {
     const i = e.target.dataset?.i;
@@ -402,8 +368,16 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     e.preventDefault();
   });
 
-  allBtn.addEventListener("click", () => tick(st.query ? st.items.map((it) => it.path) : [st.dir], true));
-  noneBtn.addEventListener("click", () => tick(st.query ? st.items.map((it) => it.path) : [st.dir], false));
+  allBtn.addEventListener("click", () => selectAll(true));
+  noneBtn.addEventListener("click", () => selectAll(false));
+  chips?.addEventListener("click", (e) => {
+    const q = e.target.closest?.("button")?.dataset.q;
+    if (!q) return;
+    // The same chip again clears the search.
+    search.value = st.query === q ? "" : q;
+    clearTimeout(searchTimer);
+    runSearch();
+  });
   more.addEventListener("click", showMore);
   earlier.addEventListener("click", showEarlier);
   search?.addEventListener("input", () => {
@@ -463,6 +437,17 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     if (!r?.ok) {
       totals.textContent = "";
       return;
+    }
+    if (JSON.stringify(toSelect(marks)) !== JSON.stringify(sel)) return; // ticked meanwhile: its own measure() follows
+    // Nothing left under the ticks (Select none inside the zip's only folder): say it with the zip
+    // itself, so the totals read "No files" and a file ticked next is sayable as `select`.
+    if (r.measured.files === 0) {
+      for (const k of Object.keys(marks)) delete marks[k];
+      marks[""] = false;
+      refreshTicks();
+      summary.textContent = "No files";
+      totals.textContent = "No files ticked.";
+      return onChange(toSelect(marks));
     }
     showTotals(r.measured);
     onChange({ ...sel, measured: r.measured });

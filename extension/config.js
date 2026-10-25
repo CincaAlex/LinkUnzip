@@ -22,6 +22,10 @@ function olderVersion(a, b) {
 export const REVIEW_URL = "https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica/reviews";
 export const RATE_AFTER = 3;
 
+// Chrome opens this page when LinkUnzip is removed, with `?v=<version>` and nothing else. It asks
+// why, and only what the person sends from it reaches the project (docs/privacy.md).
+export const UNINSTALL_URL = "https://linkunzip.app/uninstalled";
+
 /**
  * Counts one finished extraction. `rate` is what chrome.storage.local holds ({ good, asked }, or
  * nothing yet); returns what to store next and whether this job's Done screen asks.

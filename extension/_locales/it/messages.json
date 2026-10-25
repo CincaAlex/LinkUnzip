@@ -1,6 +1,6 @@
 {
   "extName": {
-    "message": "LinkUnzip: estrai file ZIP direttamente dai link"
+    "message": "LinkUnzip: decomprimi file ZIP direttamente dai link"
   },
   "extDescription": {
     "message": "Estrae uno ZIP da un link direttamente in Download o in una cartella, senza salvarlo. Con anteprima. Ogni file verificato."

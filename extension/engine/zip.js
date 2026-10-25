@@ -215,11 +215,18 @@ function sliceOf(buf, bufStart, offset, len) {
   return buf.subarray(rel, rel + len);
 }
 
+/** An index read earlier (`raw` from readIndex), parsed again without fetching anything. */
+export function indexFromRaw(raw) {
+  return { entries: raw.count ? parseCentralDirectory(raw.cd, raw.count) : [], centralDirOffset: raw.offset, raw };
+}
+
 /**
  * Fetch and parse the central directory: (1) the last ~64 KB, (2) the ZIP64 record if it isn't in
  * there, (3) the central directory in one request unless the tail already holds it.
+ * `onProgress(received, total)` hears about (3) as it arrives. The result keeps the directory's
+ * bytes in `raw`, so it can be cached and parsed again later (indexFromRaw).
  */
-export async function readIndex(src) {
+export async function readIndex(src, { onProgress } = {}) {
   const size = src.size;
   if (size < EOCD_LEN) throw new Coded("not_zip", `the file is only ${size} bytes: too small to be a ZIP archive`);
   const tailStart = size - Math.min(size, TAIL_WINDOW);
@@ -248,9 +255,18 @@ export async function readIndex(src) {
   if (loc.size > MAX_CENTRAL_DIR_BYTES) {
     throw new Coded("too_big", `the zip's index is ${Math.round(loc.size / 1048576)} MB, too big to read in the browser. The LinkUnzip command line can handle it.`);
   }
-  if (loc.count === 0) return { entries: [], centralDirOffset: loc.offset };
-  const cd = sliceOf(tail, tailStart, loc.offset, loc.size) || (await src.getBytes(loc.offset, loc.offset + loc.size - 1));
-  return { entries: parseCentralDirectory(cd, loc.count), centralDirOffset: loc.offset };
+  if (loc.count === 0) return { entries: [], centralDirOffset: loc.offset, raw: { cd: new Uint8Array(0), count: 0, offset: loc.offset } };
+  let cd = sliceOf(tail, tailStart, loc.offset, loc.size);
+  if (cd) cd = cd.slice();
+  else {
+    let received = 0;
+    onProgress?.(0, loc.size);
+    cd = await src.getBytes(loc.offset, loc.offset + loc.size - 1, (n) => {
+      received += n;
+      onProgress?.(received, loc.size);
+    });
+  }
+  return { entries: parseCentralDirectory(cd, loc.count), centralDirOffset: loc.offset, raw: { cd, count: loc.count, offset: loc.offset } };
 }
 
 /** Is this a web page rather than the file? `<` first means markup, `P` (of "PK") means a zip. */

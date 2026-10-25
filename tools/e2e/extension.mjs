@@ -107,7 +107,7 @@ const HOST_INFO_V2 = {
   ...HOST_INFO_V1,
   version: "0.2.1",
   protocol: 2,
-  features: ["pick_folder", "list", "search", "measure", "select", "resume", "error_codes"],
+  features: ["pick_folder", "list", "search", "measure", "select", "resume", "error_codes", "marks", "tick_matches"],
 };
 
 /** A job that has read its index (`ready`), with a report like the helper's. */
@@ -197,15 +197,43 @@ async function openStubbedPopup(browser, { session, replies = {}, local = null, 
         return sorted.get(dir);
       };
       const at = (path) => (p) => path === p || (p.endsWith("/") && path.startsWith(p));
-      const chosen = (path, sel) => (!sel?.paths?.length || sel.paths.some(at(path))) && !(sel?.exclude || []).some(at(path));
+      // The file list's ticks: the nearest marked parent (or the path's own mark) wins.
+      const nearest = (marks, path) => {
+        if (path in marks) return marks[path];
+        for (let i = path.lastIndexOf("/", path.length - 2); i > 0; i = path.lastIndexOf("/", i - 1)) {
+          if (path.slice(0, i + 1) in marks) return marks[path.slice(0, i + 1)];
+        }
+        return "" in marks ? marks[""] : true;
+      };
+      const chosen = (path, sel) =>
+        sel?.marks ? nearest(sel.marks, path) : (!sel?.paths?.length || sel.paths.some(at(path))) && !(sel?.exclude || []).some(at(path));
+      // Searches like the engine's: `*.jpg` is a pattern, anything else text in the path.
+      const matcher = (query) => {
+        const q = query.toLowerCase();
+        if (!/[*?]/.test(q)) return (p) => p.toLowerCase().includes(q);
+        const re = new RegExp(`^${q.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
+        return (p) => re.test(p.toLowerCase());
+      };
       return {
         list: ({ dir = "", offset = 0, limit = 500 }) => {
           const all = children(dir);
           return { ok: true, listing: { type: "listing", dir, offset, total: all.length, items: all.slice(offset, offset + Math.min(limit, 2000)) } };
         },
         search: ({ query, limit = 200 }) => {
-          const hits = files.filter((f) => f.path.toLowerCase().includes(query.toLowerCase()));
+          const test = matcher(query);
+          const hits = files.filter((f) => test(f.path));
           return { ok: true, results: { type: "search_results", query, total: hits.length, items: hits.slice(0, limit).map(fileItem) } };
+        },
+        tickMatches: ({ marks = {}, query, ticked = true }) => {
+          const test = matcher(query);
+          const out = { ...marks };
+          let matched = 0;
+          for (const f of files) {
+            if (!test(f.path)) continue;
+            out[f.path] = ticked;
+            matched += 1;
+          }
+          return { ok: true, marks: out, matched };
         },
         measure: ({ select }) => {
           const m = { type: "measured", files: 0, extracted: 0, compressed: 0 };
@@ -645,6 +673,8 @@ async function stubbedViews(browser) {
   await p.close();
 
   await chooseFiles(browser, session);
+  await noneInOnlyFolder(browser, session);
+  await searchChips(browser, session);
 
   // Resume: a stopped job, and a failed extraction (instead of "Try again").
   const lastExtract = { output: "C:\\Users\\me\\Downloads\\LinkUnzip\\big", include: [], connections: 4, stream: false };
@@ -820,7 +850,8 @@ const waitCrumbs = (page, last) => waitFor(page, (l) => [...document.querySelect
 async function chooseFiles(browser, session) {
   const sizes = ARCHIVE.map(([, a, b]) => (b === undefined ? a : a * b));
   const extracted = sizes.reduce((x, y) => x + y, 0);
-  const job = readyJob({ files: 118296, dirs: 5, extracted, compressed: Math.round(extracted * 0.9) });
+  // Into Downloads (the default), so Extract starts right in the toolbar popup.
+  const job = { ...readyJob({ files: 118296, dirs: 5, extracted, compressed: Math.round(extracted * 0.9) }), target: { key: "downloads", sub: "big" }, output: "Downloads > big" };
   const p = await openStubbedPopup(browser, { session: session(job, HOST_INFO_V2), archive: ARCHIVE });
   lastPopup = p;
   await p.waitForSelector(".fl-row");
@@ -874,9 +905,11 @@ async function chooseFiles(browser, session) {
   await waitCrumbs(p, "train");
   const firstPage = await p.$$eval(".fl-row", (r) => r.length);
   const openMs = Date.now() - t0;
+  // One photo ticked inside the unticked folder stays ticked (the engine takes the ticks as they are).
   await clickRow(p, "img000000.jpg");
-  await waitFor(p, () => !document.querySelector(".fl .notice").hidden);
+  await waitTotals(p, "9 files");
   const stillTicked = await p.$eval(".fl-row input", (c) => c.checked);
+  const hint = await p.$eval(".fl .notice", (n) => !n.hidden);
   for (let i = 0; i < 4; i++) {
     const before = await flText(p, ".fl-count");
     await clickButton(p, "Show more");
@@ -893,8 +926,8 @@ async function chooseFiles(browser, session) {
   await waitCrumbs(p, "train");
   const againMs = Date.now() - t1;
   check(
-    firstPage === 500 && windowRows === 2000 && /showing 501-2,500/.test(countText) && !stillTicked && againMs < 1000,
-    `big folder: 500 rows (${openMs} ms first, ${againMs} ms again), ${windowRows} rows after 4× Show more (${countText}); a file inside the unticked 118k folder is refused with a hint`,
+    firstPage === 500 && windowRows === 2000 && /showing 501-2,500/.test(countText) && stillTicked && !hint && againMs < 1000,
+    `big folder: 500 rows (${openMs} ms first, ${againMs} ms again), ${windowRows} rows after 4× Show more (${countText}); a file ticked inside the unticked 118k folder stays ticked`,
   );
 
   // Search covers the whole zip.
@@ -905,12 +938,14 @@ async function chooseFiles(browser, session) {
   check(hits.join(" ") === "readme.txt README.md" && hitCount === "2 matches", `search finds ${hits.join(", ")} (${hitCount})`);
   await shot(p, "15-choose-search");
 
-  // Extract sends the selection in the protocol's terms.
-  await p.click("#extract-btn"); // its label says how many: "Start Filtered Extraction (6 files, 5.8 KB)"
+  // Extract sends the ticks as they are.
+  await p.evaluate(() => (window.close = () => {})); // the toolbar popup closes itself once it started
+  await p.click("#extract-btn"); // its label says how many: "Start Filtered Extraction (9 files, 162.1 KB)"
   const ex = await p.evaluate(() => window.__sent.find((m) => m.cmd === "extract"));
+  const sent = Object.entries(ex?.select?.marks || {}).sort().map(([k, v]) => `${k}=${v}`).join(" ");
   check(
-    ex?.select?.paths?.length === 0 && [...ex.select.exclude].sort().join(" ") === "docs/guide.pdf train/",
-    `Extract sends select ${JSON.stringify(ex?.select)}`,
+    sent === "docs/=false docs/api/=true docs/readme.txt=true train/=false train/img000000.jpg=true",
+    `Extract sends the ticks: ${sent}`,
   );
 
   // Select none / all for the whole zip.
@@ -928,6 +963,64 @@ async function chooseFiles(browser, session) {
   await waitTotals(p, "118,296 files");
   const allSummary = await flText(p, ".fl-sum");
   check(noneDisabled && allSummary === "All files", `Select none disables Extract; Select all is back to "${allSummary}"`);
+  await p.close();
+}
+
+/**
+ * Select none inside the zip's only folder (COCO's train2017/): no files are left, so Extract is
+ * greyed out, and a photo ticked next stays ticked.
+ */
+async function noneInOnlyFolder(browser, session) {
+  const spec = [["train2017/", 6000, 160000]];
+  const extracted = 6000 * 160000;
+  const job = readyJob({ files: 6000, dirs: 1, extracted, compressed: Math.round(extracted * 0.9) });
+  const p = await openStubbedPopup(browser, { session: session(job, HOST_INFO_V2), archive: spec });
+  lastPopup = p;
+  await p.waitForSelector(".fl-row");
+  await openFolderRow(p, "train2017/");
+  await waitCrumbs(p, "train2017");
+  await clickButton(p, "Select none");
+  await waitTotals(p, "No files ticked.");
+  const button = () => p.$eval("#extract-btn", (b) => ({ disabled: b.disabled, label: b.textContent }));
+  const none = await button();
+  const summary = await flText(p, ".fl-sum");
+  check(
+    summary === "No files" && none.disabled && !/0 files/.test(none.label),
+    `Select none inside the zip's only folder: "${summary}", Extract greyed out ("${none.label}")`,
+  );
+  await clickRow(p, "img000000.jpg");
+  await waitTotals(p, "1 file,");
+  const one = await button();
+  const kept = await p.$eval(".fl-row input", (c) => c.checked);
+  const hint = await p.$eval(".fl .notice", (n) => !n.hidden);
+  check(kept && !hint && !one.disabled && /\(1 file,/.test(one.label), `then one photo ticked inside it stays ticked ("${one.label}")`);
+  await p.close();
+}
+
+/** The type chips (*.jpg) search by pattern; Select all N then ticks every match, not just the page. */
+async function searchChips(browser, session) {
+  const spec = [["photos/", 300, 1000], ["notes/a.txt", 10], ["notes/b.txt", 10], ["readme.md", 5]];
+  const job = readyJob({ files: 303, dirs: 2, extracted: 300025, compressed: 270000, extensions: [{ ext: "jpg", files: 300 }, { ext: "txt", files: 2 }, { ext: "md", files: 1 }] });
+  const p = await openStubbedPopup(browser, { session: session(job, HOST_INFO_V2), archive: spec });
+  lastPopup = p;
+  await p.waitForSelector(".fl-chips");
+  const chips = await p.$$eval(".chip-btn", (b) => b.map((x) => x.textContent));
+  await clickButton(p, "Select none");
+  await waitTotals(p, "No files");
+  await clickButton(p, "*.jpg");
+  await waitFor(p, () => /300 matches/.test(document.querySelector(".fl-count").textContent));
+  const pressed = await p.$eval('.chip-btn[data-q="*.jpg"]', (b) => b.getAttribute("aria-pressed"));
+  const searchText = await p.$eval("input[type=search]", (i) => i.value);
+  await clickButton(p, "Select all 300");
+  await waitTotals(p, "300 files");
+  const ticked = await p.$$eval(".fl-row input", (cbs) => cbs.every((c) => c.checked));
+  check(
+    chips.join(" ") === "*.jpg *.txt *.md" && pressed === "true" && searchText === "*.jpg" && ticked,
+    `type chips (${chips.join(" ")}): *.jpg finds 300, Select all 300 ticks every one of them (not only the 200 on the page)`,
+  );
+  await clickButton(p, "*.jpg"); // the same chip again clears the search
+  await waitCrumbs(p, "All files");
+  check((await p.$eval("input[type=search]", (i) => i.value)) === "", "the same chip again clears the search");
   await p.close();
 }
 
