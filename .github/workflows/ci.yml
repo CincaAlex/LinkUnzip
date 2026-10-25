@@ -1,6 +1,6 @@
-# Checks every push and pull request: formatting, lints, the Rust tests and a syntax check of the
-# extension scripts. The browser end-to-end test (tools/e2e/extension.mjs) needs a 1 GB demo
-# archive and a real helper install, so it stays a local pre-release step (docs/release.md).
+# Checks every push and pull request: formatting, lints, the Rust tests, a syntax check of the
+# extension scripts and the browser engine's tests under Node. The browser end-to-end tests
+# (tools/e2e) need real Chrome, so they stay a local pre-release step (docs/release.md).
 name: CI
 
 on:
@@ -54,12 +54,24 @@ jobs:
 
       - name: node --check (extension scripts)
         run: |
-          $files = @(Get-ChildItem extension -Filter *.js) + @(Get-ChildItem tools\e2e -Filter *.mjs)
+          $files = @(Get-ChildItem extension -Recurse -Filter *.js) + @(Get-ChildItem tools -Recurse -Filter *.mjs)
           foreach ($f in $files) {
             node --check $f.FullName
             if ($LASTEXITCODE -ne 0) { Write-Error "syntax error in $($f.Name)"; exit 1 }
           }
           "checked $($files.Count) scripts"
+
+      # The browser engine (extension/engine) under Node, against a local Range server, with the
+      # same generated zips as the Rust tests.
+      - name: Engine tests
+        timeout-minutes: 30
+        run: |
+          $data = Join-Path $env:RUNNER_TEMP "engine-data"
+          python tools/make_test_zips.py all-small --out $data
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tools/make_malicious_zips.py --out (Join-Path $data "malicious")
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node tools/engine_test.mjs $data
 
       - name: Python syntax (tools)
         run: python -m py_compile (Get-ChildItem tools -Filter *.py).FullName

@@ -5,7 +5,44 @@ and versions follow [Semantic Versioning](https://semver.org/). The helper (`lin
 the extension share one version number; an update to the extension alone skips the helper, which
 keeps its older version until the next full release.
 
-## Unreleased
+## 1.1.1 - Unreleased (extension only)
+
+### Added
+- **Search by type**: chips with the zip's most common file types (`*.jpg`, `*.json`), patterns
+  like `*.jpg` in the search box, and **Select all N** in search results, which ticks every match,
+  not only the rows on screen.
+- **Progress while a big index downloads** (COCO's is about 12 MB).
+- **Zips open faster the second time**: the index of the last 12 zips is kept on your PC for a week
+  (Settings > Forget them). Also used when LinkUnzip reads an index again after its background
+  page was closed.
+- When you remove LinkUnzip, Chrome opens a short page on linkunzip.app that asks why. The address
+  carries only the version number, and an answer reaches the project only if you send one (see the
+  privacy policy).
+
+### Changed
+- **Any mix of ticks works**: a file ticked inside an unticked folder stays ticked, however many
+  files the folder holds. Before, folders with more than 5,000 entries refused it with a hint.
+- **Resume without starting over**: in a folder you chose, LinkUnzip keeps the helper's progress
+  file (`.linkunzip-resume.jsonl`) while a job runs, and Resume skips the files it lists without
+  reading them back. Into Downloads, Resume still knows what was saved after LinkUnzip's background
+  page closed, and the popup offers to resume an earlier unfinished extraction of the same zip.
+- **A dropped connection no longer restarts a stored file**: it carries on from the byte where it
+  stopped. Compressed files still start again.
+- **Faster on big zips**: the totals of a selection add up whole folders (70,000 files: 0.4 ms
+  instead of 26 ms per change), the preview finds its file directly, and Previous / Next ask only
+  for the neighbours (no more 20,000-file limit).
+- **Caught .zip downloads are paused, not cancelled**, so a link that only works once isn't lost:
+  Continue Download lets Chrome carry on; after an extraction the paused download goes.
+- **The cookies permission is optional**: LinkUnzip asks for it only when the Windows helper's
+  one-pass mode needs your login.
+- Finished jobs are put away after a day (at most 10 kept), and job progress is saved less often.
+- The toolbar icon's lines are lighter and thicker at 16 and 32 px, so it reads that small.
+- The store name says "unzip", in each language's own word.
+
+### Fixed
+- Select none inside a folder that holds everything in the zip (COCO's `train2017/`) left Start
+  Filtered Extraction clickable with 0 files. The list now says No files, the button is greyed
+  out, and a file ticked next stays ticked.
 
 ## 1.1.0 - 2026-10-15 (extension only)
 
