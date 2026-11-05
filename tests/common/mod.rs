@@ -33,6 +33,7 @@ pub fn options(url: String, out: &Path, include: &[&str], jobs: usize) -> Extrac
         on_progress: None,
         stream: false,
         resume: true,
+        drop_top: false,
     }
 }
 
@@ -225,6 +226,62 @@ pub fn list_files(root: &Path) -> BTreeSet<String> {
     }
     let mut out = BTreeSet::new();
     walk(root, root, &mut out);
+    out
+}
+
+/// Deterministic bytes: different seeds give different data that can be checked.
+pub fn bytes_of(seed: u32, n: usize) -> Vec<u8> {
+    let mut s = seed.max(1);
+    (0..n)
+        .map(|_| {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (s >> 24) as u8
+        })
+        .collect()
+}
+
+/// A zip of stored entries (a name ending in `/` is a folder): two zips with the same names and
+/// sizes have the same length.
+pub fn stored_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in files {
+        let offset = out.len() as u32;
+        let crc = crc32fast::hash(data);
+        let fixed = |buf: &mut Vec<u8>, sig: u32, central: bool| {
+            buf.extend(sig.to_le_bytes());
+            if central {
+                buf.extend(20u16.to_le_bytes()); // made by
+            }
+            buf.extend(20u16.to_le_bytes()); // needed
+            buf.extend(0u16.to_le_bytes()); // flags
+            buf.extend(0u16.to_le_bytes()); // stored
+            buf.extend(0u32.to_le_bytes()); // time, date
+            buf.extend(crc.to_le_bytes());
+            buf.extend((data.len() as u32).to_le_bytes());
+            buf.extend((data.len() as u32).to_le_bytes());
+            buf.extend((name.len() as u16).to_le_bytes());
+            buf.extend(0u16.to_le_bytes()); // extra
+            if central {
+                buf.extend([0u8; 6]); // comment length, disk, internal attributes
+                buf.extend(0u32.to_le_bytes()); // external attributes
+                buf.extend(offset.to_le_bytes());
+            }
+            buf.extend(name.as_bytes());
+        };
+        fixed(&mut out, 0x0403_4b50, false);
+        out.extend_from_slice(data);
+        fixed(&mut central, 0x0201_4b50, true);
+    }
+    let cd_offset = out.len() as u32;
+    out.extend_from_slice(&central);
+    out.extend(0x0605_4b50u32.to_le_bytes());
+    out.extend([0u8; 4]);
+    out.extend((files.len() as u16).to_le_bytes());
+    out.extend((files.len() as u16).to_le_bytes());
+    out.extend((central.len() as u32).to_le_bytes());
+    out.extend(cd_offset.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
     out
 }
 

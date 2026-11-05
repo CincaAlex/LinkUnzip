@@ -26,10 +26,15 @@ fn probe_reports_size_and_validators() {
     let src = Source::probe(&server.url_for(&fx.zip_name), quick()).unwrap();
     assert_eq!(src.size, fx.zip_size);
     assert!(src.etag.is_some() && src.last_modified.is_some());
-    // The probe itself must be a one-byte range request.
+    // The probe itself must be a one-byte range request, and so is its If-Range check.
     let log = server.requests();
-    assert_eq!(log.len(), 1);
+    assert_eq!(log.len(), 2);
     assert_eq!((log[0].range, log[0].status), (Some((0, 0)), 206));
+    assert_eq!(
+        (log[1].range, log[1].status, log[1].if_range.as_deref()),
+        (Some((0, 0)), 206, Some("\"v1\""))
+    );
+    assert_eq!(src.if_range.as_deref(), Some("\"v1\""));
 }
 
 fn check_index(kind: &str, expected_requests: usize) {
@@ -80,20 +85,22 @@ fn check_index(kind: &str, expected_requests: usize) {
 }
 
 #[test]
-fn small_archive_index_costs_two_requests() {
-    // probe + the tail; the central directory is small enough to be inside the tail already.
-    check_index("small", 2);
+fn small_archive_index_costs_three_requests() {
+    // probe + its If-Range check + the tail; the central directory is small enough to be inside
+    // the tail already.
+    check_index("small", 3);
 }
 
 #[test]
-fn streamed_archive_index_costs_two_requests() {
-    check_index("streamed", 2);
+fn streamed_archive_index_costs_three_requests() {
+    check_index("streamed", 3);
 }
 
 #[test]
 fn zip64_archive_index_is_read_with_one_extra_request_for_the_directory() {
-    // probe + tail (EOCD, ZIP64 locator and ZIP64 record) + the central directory (~5 MB, too big for the tail).
-    check_index("many", 3);
+    // probe + If-Range check + tail (EOCD, ZIP64 locator and ZIP64 record) + the central
+    // directory (~5 MB, too big for the tail).
+    check_index("many", 4);
 }
 
 #[test]
@@ -359,7 +366,7 @@ fn inspect_report_has_the_numbers_the_demo_needs() {
     assert_eq!(report.normal_needs(), extracted + fx.zip_size);
     assert!(report.free.unwrap() > 0);
     assert_eq!(report.index_bytes, server.bytes_requested());
-    assert_eq!(report.index_requests, 2);
+    assert_eq!(report.index_requests, 3); // probe, its If-Range check, the tail
     assert!(report.totals.folders >= report.totals.dirs);
 
     let text = report.render(true);

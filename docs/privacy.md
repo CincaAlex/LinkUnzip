@@ -1,6 +1,6 @@
 # LinkUnzip privacy policy
 
-Effective 24 October 2026. Applies to the LinkUnzip browser extension (Chrome, Edge, Brave and other
+Effective 5 November 2026. Applies to the LinkUnzip browser extension (Chrome, Edge, Brave and other
 Chromium browsers) and the optional LinkUnzip helper program for Windows (`linkunzip.exe`). Since
 version 1.1.0 the extension works on its own; the helper is only used if you install it.
 
@@ -26,14 +26,22 @@ download from your browser, made by the LinkUnzip extension. Nothing goes to the
 or anyone else.
 
 **Preview** works the same way: only that one file is downloaded and shown in a LinkUnzip tab on
-your PC. LinkUnzip keeps nothing from it after you close the tab.
+your PC. Videos, audio and PDFs are passed from the server to that tab by the extension's own
+background page as they arrive, so even a big one is never held whole. LinkUnzip keeps nothing from
+it after you close the tab.
 
-**With the optional helper:** for servers that can only send a file from start to end (and in
-extension versions before 1.1.0), the extension passes the link to the helper on your own PC
-through the browser's native messaging, with the address of the page where you found it and your
-browser's name and version (the same `Referer` and `User-Agent` your browser sends for a normal
-download), so that servers which check them still work. The helper connects to that server,
-follows redirects as a browser would, and writes the extracted files into a folder on your PC.
+Servers that can only send a file from start to end are read the same way, in one pass from the
+first byte.
+
+**With the optional helper:** only when you turn on *Extract with the Windows helper* in Settings,
+the extension passes the link of a zip you start, with the files you ticked, to the helper on your
+own PC through the browser's native messaging. Nothing else goes to it: no cookies and no page
+address (links that need your login are extracted in the browser). The helper connects to that
+server, follows redirects as a browser would, and writes the extracted files into
+`Downloads\<zip name>` on your PC. In extension versions before 1.1.0 (and for one-pass reads up
+to version 1.1.1), the extension also passed the address of the page where you found the link and
+your browser's name and version (the same `Referer` and `User-Agent` your browser sends for a
+normal download).
 
 ## Your browser login (cookies)
 
@@ -47,25 +55,31 @@ login for that one site, **only if you allowed it**:
   to it, as it does when you click a download link. LinkUnzip itself does not read them. If the
   download is redirected to another site, the browser sends that site only its own cookies, if it
   has any, following its usual rules.
-- With the optional helper only, the extension reads the cookies for the link's site at the moment
-  you start and passes them to the helper on your PC. The helper sends them only to that site, and
-  drops them if the download is redirected to a different site. For this the extension needs
-  Chrome's cookies permission, which it asks for the first time it is needed (from version 1.1.1;
-  before, it had it from the install).
+- LinkUnzip never reads your cookies itself and has no permission to. (Versions 1.1.1 and before
+  could ask for Chrome's cookies permission for the optional helper's one-pass mode; that mode now
+  runs in the browser, so the permission is gone.)
 - Cookies are never stored by LinkUnzip, never written to disk by it, and never sent anywhere else.
 
 Without that permission, LinkUnzip's requests carry no cookies at all.
 
+## Passwords of protected zips
+
+When a zip is password-protected, LinkUnzip asks for its password and uses it on your PC to decrypt
+the files. It keeps the password in memory only while it works on that zip, never writes it to
+storage or disk, and never sends it anywhere.
+
 ## What is stored, and where
 
 - **Settings** (where files go, number of connections, login options, *Catch .zip downloads*,
-  light or dark theme): in the browser's extension storage on your PC.
+  *Extract with the Windows helper*, light or dark theme): in the browser's extension storage on
+  your PC.
 - **The sites where you allowed your login**, and **a count of finished extractions** (for a
   one-time question asking for a store rating): in the same storage.
 - **The folder you chose**, if any: the browser keeps a reference to it in the extension's storage,
   and Chrome decides when to ask you again for permission to write there.
 - **The state of current jobs** (link, page address, folder, progress, file names, what you ticked)
-  so the popup can show it: in the browser's session storage, cleared when the browser closes.
+  so the popup can show it, and **of open previews** (the link and where the file sits in the zip):
+  in the browser's session storage, cleared when the browser closes. Never a zip's password.
 - **Extracted files**: in your Downloads folder or the folder you chose. They are yours; LinkUnzip
   never uploads them. While a file is being handed to Chrome's downloads, the browser holds it
   briefly (in memory, or in its own temporary storage for large files) until it is saved.
@@ -108,11 +122,11 @@ even when the data never leaves the user's PC. By their definitions LinkUnzip ha
 all of them only on your PC:
 
 - **Authentication information:** a site's cookies, only after you allowed that site (see *Your
-  browser login* above). Your browser sends them only to that site; with the optional helper, the
-  extension passes them to the helper, which sends them only to that site.
+  browser login* above). Your browser sends them only to that site. They never go to the optional
+  helper.
 - **Web history:** the link you chose and the address of the page it was on, kept in the job state
   on your PC, and the link with the zip's index for at most a week (see *What is stored* above).
-  The page address is only passed on to the helper, if you use it.
+  The link (not the page address) goes to the helper only if you turned it on in Settings.
 - **Website content:** the `.zip` links on the page you are on, read when you open the toolbar
   popup so it can list them, and the files of the zip you extract or preview, which are saved or
   shown only on your PC.

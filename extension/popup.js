@@ -7,7 +7,8 @@
 import { h } from "./dom.js";
 import { fileList } from "./filelist.js";
 import { askFolderPermission, folderPermission, getFolder, pickFolder as showFolderPicker, setFolder } from "./folder.js";
-import { clock, fileNameFromUrl, hostOf, humanBytes, humanDuration, sitePattern } from "./fmt.js";
+import { clock, fileNameFromUrl, folderNameFor, hostOf, humanBytes, humanDuration, joinPath, sitePattern } from "./fmt.js";
+import { engineFor, helperCanExtract } from "./route.js";
 import { ALL_SITES, DEFAULT_SETTINGS, applyTheme, effectiveTheme, loadSettings } from "./settings.js";
 
 const view = document.getElementById("view");
@@ -19,6 +20,9 @@ let st = { jobs: {}, current: null, hostInfo: null, hostError: null, helperInfo:
 let settings = { ...DEFAULT_SETTINGS };
 // What the user typed or chose for each job, so neither a redraw nor closing the popup loses it.
 let drafts = {};
+// A zip's password as typed, by job: only in this page's memory, never in the drafts (those are
+// stored). Start hands it to the background, which keeps it in memory too.
+const typedPasswords = new Map();
 let drawn = ""; // which job/phase is on screen
 let updater = null; // redraws the live numbers of the current view without rebuilding it
 
@@ -32,6 +36,13 @@ function draftFor(job) {
   // The folder lives in the job (the background keeps it when Settings or a pick change it).
   d.output = job.output || "";
   d.target = job.target || null;
+  // Settings > Extract with the Windows helper: it saves into the Windows Downloads folder (which
+  // may not be the one Chrome uses), so the popup shows its whole path.
+  if (engineFor(job, settings, st.helperInfo).via === "helper") {
+    const sub = job.target?.sub || folderNameFor(job.name || "");
+    d.target = { key: "helper", sub };
+    d.output = joinPath(st.helperInfo.downloads_dir, sub);
+  }
   return d;
 }
 
@@ -107,6 +118,8 @@ async function loadState() {
 //   shows the progress, and Chrome keeps a folder permission while a LinkUnzip window is open.
 
 const isDownloads = (target) => target?.key === "downloads";
+/** Into Downloads, or by the helper: nothing for Chrome to ask, no picker. */
+const noPicker = (target) => isDownloads(target) || target?.key === "helper";
 /** Files Chrome's downloads save per second (measured: 6 to 11 small files). */
 const DOWNLOADS_PER_SEC = 6;
 /** From this many seconds of saving on, the popup suggests a folder instead of Downloads. */
@@ -193,7 +206,7 @@ async function useDownloads(job, d) {
  * the browser restarts). Returns the target, or null with `problem` saying why.
  */
 async function readyFolder(job, d, problem) {
-  if (isDownloads(d.target)) return d.target;
+  if (noPicker(d.target)) return d.target;
   if (!d.target && !(await chooseJobFolder(job, d, problem))) {
     if (problem.hidden) {
       problem.textContent = "Choose a folder to extract into.";
@@ -218,7 +231,7 @@ async function readyFolder(job, d, problem) {
 
 /** Can an extraction start right away, without the picker or one of Chrome's questions? */
 async function folderReady(d) {
-  if (isDownloads(d.target)) return true;
+  if (noPicker(d.target)) return true;
   if (!d.target) return false;
   const handle = await getFolder(d.target.key);
   return Boolean(handle) && (await folderPermission(handle)) === "granted";
@@ -230,10 +243,11 @@ async function folderReady(d) {
  * (see `pending` at the end of this file).
  */
 async function startExtraction(job, d, request, problem) {
-  // The helper's one-pass mode writes where the helper decides: no folder to ask for.
-  if (request.stream) return send("extract", { ...request, id: job.id });
-  if (!windowMode && !isDownloads(d.target)) {
-    await chrome.storage.session.set({ pendingExtract: { ...request, id: job.id } });
+  if (!windowMode && !noPicker(d.target)) {
+    // The window starts it from storage: the password goes to the background's memory instead.
+    const { password, ...rest } = request;
+    if (password) await send("setPassword", { id: job.id, password });
+    await chrome.storage.session.set({ pendingExtract: { ...rest, id: job.id } });
     await openLinkUnzipWindow("&start=1");
     return;
   }
@@ -251,10 +265,49 @@ async function startExtraction(job, d, request, problem) {
 }
 
 /**
+ * The zip's password: `text` says why it's asked, Show reveals what was typed, Enter runs
+ * `onEnter`. What is typed stays in this page's memory (typedPasswords) until Start sends it.
+ */
+function passwordField(job, text, { onEnter = null } = {}) {
+  const id = `password-${job.id}`;
+  const input = h("input", { type: "password", id, autocomplete: "off", spellcheck: "false", value: typedPasswords.get(job.id) || "" });
+  input.addEventListener("input", () => typedPasswords.set(job.id, input.value));
+  if (onEnter) input.addEventListener("keydown", (e) => e.key === "Enter" && onEnter());
+  const reveal = h("button", { type: "button", class: "link small", "aria-pressed": "false" }, "Show");
+  reveal.addEventListener("click", () => {
+    const shown = input.type === "password";
+    input.type = shown ? "text" : "password";
+    reveal.textContent = shown ? "Hide" : "Show";
+    reveal.setAttribute("aria-pressed", String(shown));
+  });
+  return h(
+    "div",
+    { class: "notice password-row" },
+    h("label", { for: id }, text),
+    h("div", { class: "row" }, input, reveal),
+    h("p", { class: "muted small" }, "Kept only while LinkUnzip works on this zip, never saved. It may ask again later."),
+  );
+}
+
+/**
  * Where the files go, Change... for this job (the picker opens in the window) and, for a folder,
  * the way back to Downloads. `onChange` hears about a new place.
  */
 function folderField(label, d, job, { compact = false, onChange = () => {} } = {}) {
+  // With the helper turned on, say which program extracts this zip (and why the browser does).
+  const route = engineFor(job, settings, st.helperInfo);
+  const by = settings.useHelper
+    ? h("p", { class: "muted small engine-note" }, route.via === "helper" ? "Extracted by the Windows helper." : `Extracted in the browser: ${route.why}.`)
+    : null;
+  if (d.target?.key === "helper") {
+    return h(
+      "div",
+      { class: "field" },
+      h("span", { class: compact ? "sr-only" : "label" }, label),
+      h("div", { class: "path-row folder-row" }, h("span", { class: "folder-name", title: d.output }, d.output)),
+      by,
+    );
+  }
   const text = h("span", { class: "folder-name" });
   const problem = h("p", { class: "notice bad", hidden: true });
   const back = h("button", { class: "link small", type: "button" }, "Save to Downloads instead");
@@ -294,6 +347,7 @@ function folderField(label, d, job, { compact = false, onChange = () => {} } = {
     h("span", { class: compact ? "sr-only" : "label" }, label),
     h("div", { class: "path-row folder-row" }, change, text),
     h("div", { class: "folder-more" }, back),
+    by,
     choosing ? h("p", { class: "muted small" }, "Chrome doesn't let extensions pick Downloads, Desktop or Documents themselves: pick or make a folder inside one of them (Downloads > LinkUnzip, for example).") : null,
     problem,
   );
@@ -352,7 +406,12 @@ function jobLine(job) {
   line.hidden = !job;
   if (!job) return line.replaceChildren();
   const host = hostOf(job.url);
-  line.replaceChildren(h("span", { class: "name", title: job.url }, host ? `${job.name} · ${host}` : job.name));
+  // A zip inside a zip: the outer one's name first, and the way back to it.
+  const name = job.parentId ? `${job.outerName} › ${job.name}` : job.name;
+  line.replaceChildren(h("span", { class: "name", title: job.url }, host ? `${name} · ${host}` : name));
+  if (job.parentId && st.jobs[job.parentId] && job.phase !== "extracting") {
+    line.prepend(h("button", { type: "button", title: `Back to ${job.outerName}`, "aria-label": `Back to ${job.outerName}`, onclick: () => send("back", { id: job.id }) }, "‹"));
+  }
   if (job.phase !== "extracting") {
     line.append(h("button", { type: "button", title: "Close this zip", "aria-label": "Close this zip", onclick: () => send("dismiss", { id: job.id }) }, "✕"));
   }
@@ -387,9 +446,9 @@ function spokenState(job) {
 function renderChip() {
   const chip = document.getElementById("host-chip");
   const [state, word, title] = st.hostError
-    ? ["bad", "✗ Stopped", st.hostError.message]
+    ? ["bad", "Stopped", st.hostError.message]
     : st.hostInfo
-      ? ["ok", "✓ In browser", "LinkUnzip works right here in the browser: nothing to install"]
+      ? ["ok", "In browser","LinkUnzip works right here in the browser: nothing to install"]
       : ["unknown", "Starting...", ""];
   chip.dataset.state = state;
   chip.title = title;
@@ -617,7 +676,7 @@ function readyView(job) {
   // only some files are ticked.
   const goLabel = () => {
     // Sent here from the toolbar popup, and Chrome still has to ask something: one click.
-    if (windowMode && pendingFor(job) && !isDownloads(d.target)) return d.target ? "Allow and start extraction" : "Choose folder and start";
+    if (windowMode && pendingFor(job) && !noPicker(d.target)) return d.target ? "Allow and start extraction" : "Choose folder and start";
     const some = Boolean(d.include.trim()) || (selection && !selection.all);
     const verb = some ? "Start Filtered Extraction" : "Start Extraction";
     if (nothing() || d.include.trim()) return verb;
@@ -653,12 +712,15 @@ function readyView(job) {
     go.textContent = goLabel();
     updateSlow();
   };
+  // Password-protected files: one field for the zip's password, asked before anything starts.
+  const locked = r.encrypted > 0 ? passwordField(job, r.encrypted === r.files ? "This zip is password-protected." : `${r.encrypted.toLocaleString()} of its files ${r.encrypted === 1 ? "is" : "are"} password-protected.`) : null;
   const request = (resume = false) => ({
     include: d.include.split(",").map((s) => s.trim()).filter(Boolean),
     select: selection?.select,
     connections: settings.connections,
     force: !fitsNow() && d.force,
     resume,
+    password: typedPasswords.get(job.id) || undefined,
   });
   const extractNow = async (resume) => {
     problem.hidden = true;
@@ -681,7 +743,7 @@ function readyView(job) {
         )
       : null;
   // Sent here from the toolbar popup, and Chrome still has to ask something: say what.
-  if (windowMode && pendingFor(job) && !isDownloads(d.target)) {
+  if (windowMode && pendingFor(job) && !noPicker(d.target)) {
     go.textContent = goLabel();
     problem.className = "notice";
     problem.textContent = d.target
@@ -752,12 +814,13 @@ function readyView(job) {
       ? fileList({
           job,
           draft: d,
-          features: { search: hasFeature("search"), measure: hasFeature("measure"), preview: hasFeature("preview"), tickMatches: hasFeature("tick_matches") },
+          features: { search: hasFeature("search"), measure: hasFeature("measure"), preview: hasFeature("preview"), tickMatches: hasFeature("tick_matches"), inner: hasFeature("inner") && (job.inner?.length || 0) < 4 },
           api: {
             list: (dir, offset, limit) => send("list", { id: job.id, dir, offset, limit }),
             search: (query) => send("search", { id: job.id, query }),
             measure: (select) => send("measure", { id: job.id, select }),
             preview: (path) => send("preview", { id: job.id, path }),
+            open: (path) => send("openInner", { id: job.id, path }),
             tickMatches: (marks, query, ticked) => send("tickMatches", { id: job.id, marks, query, ticked }),
           },
           onChange: (sel) => {
@@ -782,9 +845,12 @@ function readyView(job) {
 
   const bar = actionBar([
     go,
-    job.caught?.downloadId != null
-      ? h("button", { class: "btn", onclick: () => send("continueDownload", { id: job.id }) }, "Continue Download")
-      : h("button", { class: "btn", onclick: () => send("downloadNormally", { url: job.url }) }, "Download Normal ZIP (Fallback)"),
+    // A zip inside a zip has no link of its own to download normally.
+    job.parentId
+      ? null
+      : job.caught?.downloadId != null
+        ? h("button", { class: "btn", onclick: () => send("continueDownload", { id: job.id }) }, "Continue Download")
+        : h("button", { class: "btn", onclick: () => send("downloadNormally", { url: job.url }) }, "Download Normal ZIP (Fallback)"),
     h("button", { class: "btn cancel", onclick: () => send("dismiss", { id: job.id }) }, "Cancel"),
   ]);
   bar.prepend(...[force, slow, problem].filter(Boolean));
@@ -798,6 +864,7 @@ function readyView(job) {
       : null,
     filter,
     caughtNotice(job),
+    locked,
     earlier,
     folderField("Extract into", d, job, {
       compact: true,
@@ -932,11 +999,17 @@ function doneView(job) {
         ? h("p", { class: "muted small" }, `${intoDownloads ? "Chrome's downloads don't take some names, like .gitignore or names with ~, so they got a _" : "Names Windows can't store got a _"}: ${r.renamed_sample.map(([from, to]) => `${from} became ${to}`).join(", ")}${r.renamed > r.renamed_sample.length ? ", ..." : ""}`)
         : null,
       r.held > 0 ? heldNotice(r) : null,
+      r.other_password > 0
+        ? h("p", { class: "notice" }, `${files(r.other_password)} in this zip ${r.other_password === 1 ? "has" : "have"} another password, so ${r.other_password === 1 ? "it was" : "they were"} left out: ${r.other_password_sample.map((n) => n.split("/").pop()).join(", ")}${r.other_password > r.other_password_sample.length ? ", ..." : ""}. Extract ${r.other_password === 1 ? "it" : "them"} again with that password.`)
+        : null,
+      r.listing_differs > 0
+        ? h("p", { class: "notice" }, `The zip's own index lists ${files(r.listing_differs)} differently from the data that came (${r.listing_differs_sample.join(", ")}). Other zip programs may show ${r.listing_differs === 1 ? "it" : "them"} with another size or content.`)
+        : null,
       h("p", { class: "path" }, `In ${r.output}`),
     ),
     actionBar([
       job.via === "helper" ? h("button", { class: "btn primary", onclick: () => send("reveal", { path: r.output }) }, "Open folder") : null,
-      intoDownloads ? h("button", { class: "btn primary", onclick: () => send("showDownloads") }, "Open Downloads") : null,
+      intoDownloads ? h("button", { class: "btn primary", onclick: () => send("openFolder", { id: job.id }) }, "Open folder") : null,
       h("button", { class: job.via === "helper" || intoDownloads ? "btn" : "btn primary", onclick: () => send("dismiss", { id: st.current }) }, "Extract another"),
     ]),
   );
@@ -1099,13 +1172,24 @@ function describeError(job, e) {
       return { title: "LinkUnzip stopped", text: e.message, actions: ["retry", "download"] };
     case "no_range":
       return {
-        title: "This server can't send parts of the file",
-        text: "It answered 200 OK with the whole file instead of 206 Partial Content.",
-        more: st.helperInfo
-          ? "Servers like GitHub's 'Download ZIP' build the file while they send it, so it can only be read from the start. The LinkUnzip helper can still extract it in one pass: one connection, no size preview, and the zip is still never saved."
-          : "Servers like GitHub's 'Download ZIP' build the file while they send it, so it can only be read from the start. Reading it in one pass needs the LinkUnzip helper for Windows for now; or download it normally.",
-        actions: st.helperInfo ? ["stream", "download"] : ["download"],
+        title: "This server sends the zip only from the start",
+        text: "It can't send parts of the file (like GitHub's Download ZIP, which builds the zip while it sends it), so there is no file list first. LinkUnzip can still extract all of it in one pass.",
+        more: "One connection, no size before it starts, and the zip is still never saved. Every file is checked as it arrives.",
+        folder: true,
+        actions: ["stream", "download"],
       };
+    case "inner_compressed":
+      return {
+        title: "This zip inside the zip can only be read in one pass",
+        text: e.message,
+        more: "One pass reads it from its first byte to its last, through the outer zip. Every file is checked as it arrives.",
+        folder: true,
+        actions: ["stream"],
+      };
+    case "password_needed":
+      return { title: "This zip is password-protected", text: "Type its password to extract the protected files.", password: true, folder: true, actions: ["withPassword"] };
+    case "password_wrong":
+      return { title: "That password doesn't fit", text: "LinkUnzip checked it on the first protected file before writing anything. Try again.", password: true, folder: true, actions: ["withPassword"] };
     case "html_page":
       return {
         title: "This link opens a web page, not the file",
@@ -1284,10 +1368,6 @@ function askForAccess(job, note) {
   );
 }
 
-/** Whether Chrome's optional cookies permission is already granted (checked when the popup opens). */
-let cookiesGranted = false;
-chrome.permissions.contains({ permissions: ["cookies"] }).then((v) => (cookiesGranted = v), () => {});
-
 function errorView(job) {
   const e = job.error || { code: "failed", message: "Something went wrong." };
   const info = describeError(job, e);
@@ -1310,16 +1390,24 @@ function errorView(job) {
           );
         },
       }, "Allow every site"),
+    // One pass from the first byte, into the folder in the field.
     stream: () =>
       h("button", {
+        onclick: () => startExtraction(job, d, { include: [], connections: 1, stream: true, password: typedPasswords.get(job.id) || undefined }, problem),
+      }, "Extract everything (one pass)"),
+    // The last extraction again, now with the password in the field.
+    withPassword: () =>
+      h("button", {
         onclick: () => {
-          const go = () => send("extract", { id: job.id, include: [], connections: 1, stream: true });
-          // The helper needs the site's cookies when the user's login goes along: Chrome's
-          // optional cookies permission is asked for right here, in the click, only then.
-          if (!job.loginSent || cookiesGranted) return go();
-          chrome.permissions.request({ permissions: ["cookies"] }).then(go, go);
+          const password = typedPasswords.get(job.id);
+          if (!password) {
+            problem.textContent = "Type the password first.";
+            problem.hidden = false;
+            return;
+          }
+          startExtraction(job, d, { ...extractAgain(job), password }, problem);
         },
-      }, "Stream it anyway"),
+      }, "Extract"),
     // The same extraction as before, into the folder now in the field.
     extractHere: () =>
       h("button", {
@@ -1341,7 +1429,7 @@ function errorView(job) {
   };
   // An extraction that failed part way can carry on where it stopped (not for setup problems).
   let wanted = info.actions;
-  if (job.failedWhile === "extract" && canResume(job) && !["host_missing", "host_forbidden"].includes(e.code)) {
+  if (job.failedWhile === "extract" && canResume(job) && !["host_missing", "host_forbidden", "password_needed", "password_wrong"].includes(e.code)) {
     wanted = wanted.filter((a) => a !== "retry");
     const keepFirst = ["extractHere", "login", "copy"].includes(wanted[0]);
     wanted = keepFirst ? [wanted[0], "resume", ...wanted.slice(1)] : ["resume", ...wanted];
@@ -1360,6 +1448,7 @@ function errorView(job) {
       ),
       info.more ? h("p", { class: "muted small" }, info.more) : null,
       note,
+      info.password ? passwordField(job, "Password", { onEnter: () => buttons[0]?.click() }) : null,
       info.folder ? folderField("Extract into", d, job) : null,
       handoverNotice(job, d, buttons[0]?.textContent || "the button"),
       problem,
@@ -1380,6 +1469,7 @@ function setupSettings() {
     loginWhenNeeded: document.getElementById("set-login"),
     loginEverywhere: document.getElementById("set-login-all"),
     catchDownloads: document.getElementById("set-catch"),
+    useHelper: document.getElementById("set-helper"),
   };
   const save = () => {
     settings = {
@@ -1388,8 +1478,13 @@ function setupSettings() {
       loginWhenNeeded: fields.loginWhenNeeded.checked,
       loginEverywhere: fields.loginEverywhere.checked,
       catchDownloads: fields.catchDownloads.checked,
+      useHelper: fields.useHelper.checked,
     };
     chrome.storage.local.set({ settings });
+    showHelper();
+    // Where a waiting zip goes, and who extracts it, may have changed.
+    drawn = "";
+    render();
   };
 
   // Light / dark: the header button flips what is on screen; Settings can also go back to
@@ -1421,6 +1516,7 @@ function setupSettings() {
   fields.loginWhenNeeded.checked = settings.loginWhenNeeded;
   fields.loginEverywhere.checked = settings.loginEverywhere;
   fields.catchDownloads.checked = settings.catchDownloads;
+  fields.useHelper.checked = settings.useHelper;
   for (const el of Object.values(fields)) el.addEventListener("change", save);
 
   // Where every job goes: Downloads, or a folder chosen here (a subfolder per zip either way).
@@ -1473,6 +1569,22 @@ function setupSettings() {
       chrome.permissions.remove(ALL_SITES).catch(() => {});
     }
   });
+  // Extract with the Windows helper: only offered when it is installed, and only new ones can.
+  const helperRow = document.getElementById("set-helper-row");
+  const helperNote = document.getElementById("set-helper-note");
+  const showHelper = () => {
+    const helper = st.helperInfo;
+    helperRow.hidden = !helper && !settings.useHelper;
+    const able = helperCanExtract(helper);
+    fields.useHelper.disabled = !able && !settings.useHelper;
+    helperNote.textContent = !helper
+      ? "The helper isn't running on this PC, so the browser extracts everything."
+      : able
+        ? `The helper program saves straight into ${helper.downloads_dir || "Downloads"}, a folder per zip, fast even with thousands of files, and Open folder opens it in Explorer. Password zips, zips inside zips and links that need your login are still extracted in the browser.`
+        : `The helper on this PC (${helper.version}) is too old for this. Install the new one first.`;
+    document.getElementById("host-info").textContent = `LinkUnzip ${chrome.runtime.getManifest().version} · works in the browser${helper ? ` · Windows helper ${helper.version} installed${settings.useHelper && able ? ", extracts the zips it can" : ", not used"}` : ""}`;
+  };
+  showHelper();
   const clearCache = document.getElementById("clear-cache");
   clearCache.addEventListener("click", async () => {
     clearCache.disabled = true;
@@ -1485,8 +1597,7 @@ function setupSettings() {
     panel.hidden = !open;
     document.body.classList.toggle("settings-open", open);
     button.setAttribute("aria-expanded", String(open));
-    const helper = st.helperInfo;
-    document.getElementById("host-info").textContent = `LinkUnzip ${chrome.runtime.getManifest().version} · works in the browser${helper ? ` · Windows helper ${helper.version} installed (used for servers without Range support)` : ""}`;
+    showHelper();
   };
   button.addEventListener("click", () => toggle(panel.hidden));
   document.getElementById("settings-done").addEventListener("click", () => {

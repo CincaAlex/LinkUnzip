@@ -8,7 +8,7 @@
 // * Neighbouring files are grouped into spans, so one Range request fetches a whole run of them.
 
 import { coded, failed } from "./errors.js";
-import { LOCAL_FIXED_LEN, isDir, unsupportedReason } from "./zip.js";
+import { LOCAL_FIXED_LEN, isDir, isEncrypted, unsupportedReason } from "./zip.js";
 
 /** Selected entries further apart than this go into separate requests. */
 export const GAP_THRESHOLD = 1 << 20;
@@ -62,6 +62,57 @@ export function sanitizeEntryName(name) {
     changed = true;
   }
   return { parts, path: parts.join("/"), changed };
+}
+
+// ------------------------------------------------------------------------------------------
+// The zip's own top folder
+// ------------------------------------------------------------------------------------------
+
+/** An entry name's first folder, as written in the zip, or null for a file at the top. */
+export function topOf(name, dir) {
+  const unified = listPath(name);
+  const i = unified.indexOf("/");
+  if (i < 0) return dir ? unified : null;
+  return i > 0 && (i < unified.length - 1 || dir) ? unified.slice(0, i) : null;
+}
+
+/** Does a zip folder called `top` go into a folder called `folder` (blender-4.2 into blender-4.2)? */
+export const sameFolder = (top, folder) => Boolean(top && folder) && top.toLowerCase() === folder.toLowerCase();
+
+/**
+ * The folder every entry of the archive sits in, when it has the name of the folder the zip goes
+ * into (Downloads/blender-4.2 for blender-4.2.zip, which holds blender-4.2/...). Its contents
+ * then go straight there instead of into Downloads/blender-4.2/blender-4.2. Null otherwise.
+ */
+export function wrappingFolder(entries, folder) {
+  if (!folder || !entries.length) return null;
+  const top = topOf(entries[0].name, isDir(entries[0]));
+  if (!sameFolder(top, folder)) return null;
+  for (const e of entries) if (topOf(e.name, isDir(e)) !== top) return null;
+  return top;
+}
+
+/**
+ * A sanitized path without its first folder. A file right in it may not take the journal's name
+ * now that it lands at the top: then it gets a `_`, and `renamed` says so.
+ */
+export function withoutTop(parts) {
+  const rest = parts.slice(1);
+  const renamed = rest.length === 1 && rest[0].toLowerCase() === JOURNAL_NAME;
+  if (renamed) rest[0] = `_${rest[0]}`;
+  return Object.assign(rest, { renamed });
+}
+
+/** `check()`'s result with the wrapping folder left out of every output path. */
+export function dropTop(checked) {
+  const renames = checked.renames.map(([from, to]) => [from, withoutTop(to.split("/")).join("/")]);
+  const files = checked.files.map((f) => {
+    const parts = withoutTop(f.parts);
+    if (parts.renamed) renames.push([f.entry.name, parts.join("/")]);
+    return { ...f, parts: [...parts], path: parts.join("/") };
+  });
+  const dirs = checked.dirs.filter((d) => d.length > 1).map((d) => [...withoutTop(d)]);
+  return { files, dirs, renames };
 }
 
 // ------------------------------------------------------------------------------------------
@@ -243,7 +294,7 @@ export function check(index, filter) {
       problems.push(`${JSON.stringify(entry.name)}: its data overlaps the next entry (corrupt or hostile archive)`);
       continue;
     }
-    if (entry.method === 0 && entry.csize !== entry.usize) {
+    if (entry.method === 0 && !isEncrypted(entry) && entry.csize !== entry.usize) {
       problems.push(`${JSON.stringify(entry.name)}: stored entry whose compressed and uncompressed sizes differ`);
       continue;
     }

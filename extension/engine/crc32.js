@@ -17,6 +17,9 @@ const TABLES = (() => {
   return t;
 })();
 
+/** The plain one-byte table (ZipCrypto's keys use it). */
+export const CRC_TABLE = TABLES.subarray(0, 256);
+
 /** Continue a CRC over `bytes`. Start with 0; the result is the finished CRC of everything so far. */
 export function crc32(crc, bytes) {
   const t = TABLES;

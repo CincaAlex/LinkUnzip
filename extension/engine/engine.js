@@ -8,19 +8,29 @@
 //
 // The file list's selection comes as its ticks (`select: {marks}`, the nearest mark wins); the
 // helper's `{paths, exclude}` still works.
+//
+// `inspect` and `extract` may name a zip inside the zip (`inner: [path, ...]`, a zip in a zip in
+// a zip as a longer list). A stored inner zip is read with Range requests like any other; a
+// compressed one only in one pass (`extract` with `stream: true`), as is a server without Range
+// support. `extract` takes the zip's `password` when files in it are encrypted.
 
+import { encryptionOf } from "./crypto.js";
+import { entryBody } from "./entry.js";
 import { Coded, describe } from "./errors.js";
 import { extract } from "./extract.js";
-import { Filter, regionEndOf } from "./plan.js";
-import { Source } from "./source.js";
+import { Filter, listPath, regionEndOf } from "./plan.js";
+import { Source, SubSource } from "./source.js";
+import { streamExtract } from "./stream.js";
 import { heldBackType } from "./dl-sink.js";
 import { Tree, heldBack } from "./tree.js";
-import { indexFromRaw, isDir, readIndex, unsupportedReason } from "./zip.js";
+import { indexFromRaw, isDir, isEncrypted, needsPassword, readIndex, unsupportedReason } from "./zip.js";
 
 export const PROTOCOL = 2;
-export const FEATURES = ["list", "search", "measure", "select", "resume", "error_codes", "preview", "marks", "neighbors", "tick_matches", "index_progress"];
+export const FEATURES = ["list", "search", "measure", "select", "resume", "error_codes", "preview", "marks", "neighbors", "tick_matches", "index_progress", "stream", "password", "inner"];
 /** Inspected archives kept for browsing; older ones are read again when asked about. */
 const KEEP_INSPECTED = 8;
+/** Zips inside zips, at most this deep (which also stops a zip that holds itself). */
+const MAX_INNER = 4;
 /** index_progress messages, at most this often. */
 const INDEX_PROGRESS_MS = 250;
 
@@ -39,6 +49,9 @@ function report(src, index, tree) {
   let extracted = 0;
   const unsupported = [];
   const held = new Map();
+  const encryption = new Set();
+  let encrypted = 0;
+  let innerZips = 0;
   for (const e of index.entries) {
     if (isDir(e)) {
       dirs += 1;
@@ -49,6 +62,11 @@ function report(src, index, tree) {
     extracted += e.usize;
     const why = unsupportedReason(e);
     if (why) unsupported.push({ name: e.name, reason: why });
+    else if (needsPassword(e)) {
+      encrypted += 1;
+      encryption.add(encryptionOf(e));
+    }
+    if (/\.zip$/i.test(e.name)) innerZips += 1;
     const ext = heldBackType(e.name);
     if (ext) held.set(ext, (held.get(ext) || 0) + 1);
   }
@@ -78,11 +96,36 @@ function report(src, index, tree) {
     linkunzip_fits: null,
     unsupported: unsupported.length,
     unsupported_sample: unsupported.slice(0, 3),
+    encrypted,
+    encryption: [...encryption],
+    inner_zips: innerZips,
+    inner: src.path ? innerPath(src) : [],
     largest,
     extensions: tree.extensions,
     index_cached: Boolean(index.cached),
     ...heldBack(held),
   };
+}
+
+/** The chain of inner zip paths a SubSource stands for, outermost first. */
+function innerPath(src) {
+  const chain = [];
+  for (let s = src; s?.path; s = s.outer) chain.unshift(s.path);
+  return chain;
+}
+
+/** The inner zip's entry: by its path as the file list shows it. */
+function findEntry(index, path) {
+  return index.entries.find((e) => !isDir(e) && listPath(e.name) === path) || null;
+}
+
+/**
+ * A compressed (or encrypted) zip inside the zip as a body to read once from its first byte, the
+ * way streamExtract wants it. Its CRC-32 is checked at the end like any file's.
+ */
+function entryStream(src, index, entry, password, signal) {
+  const body = entryBody(src, entry, regionEndOf(index)(entry.offset), password, { signal });
+  return { body, length: entry.usize, etag: src.etag, lastModified: src.lastModified, contentType: "application/zip" };
 }
 
 /**
@@ -134,26 +177,92 @@ export function createEngine({ post, openSink, version = "0", indexCache = null 
     return index;
   }
 
-  async function inspect({ id, url, credentials }) {
+  /**
+   * The zip a request is about: the link's, or the zip inside it that `inner` names. `{src,
+   * index}`, or `{compressed: {src, index, entry}}` for an inner zip that can only be read in one
+   * pass (compressed or encrypted inside the outer one).
+   */
+  async function resolve(m, signal, onProgress) {
+    const inner = m.inner || [];
+    if (inner.length > MAX_INNER) throw new Coded("bad_request", `zips inside zips are opened ${MAX_INNER} levels deep at most`);
+    let src = await Source.probe(m.url, { credentials: m.credentials, signal });
+    for (let i = 0; i < inner.length; i++) {
+      const index = await loadIndex(src);
+      const entry = findEntry(index, inner[i]);
+      if (!entry) throw new Coded("bad_request", `there is no file ${JSON.stringify(inner[i])} in the zip`);
+      if (entry.method !== 0 || isEncrypted(entry)) {
+        if (i < inner.length - 1) {
+          throw new Coded("unsupported_entries", `${inner[i]} is compressed inside its zip, so the zips inside it can't be opened one by one.`);
+        }
+        return { compressed: { src, index, entry } };
+      }
+      src = await SubSource.open(src, entry, inner[i], regionEndOf(index)(entry.offset));
+    }
+    return { src, index: await loadIndex(src, onProgress) };
+  }
+
+  const compressedInner = (entry) =>
+    new Coded(
+      "inner_compressed",
+      `${listPath(entry.name).split("/").pop()} is ${isEncrypted(entry) ? "encrypted" : "compressed"} inside the zip, so it can only be read from start to end: no file list, but LinkUnzip can extract all of it in one pass.`,
+      { detail: `${entry.name}: method ${entry.method}, flags ${entry.flags}` },
+    );
+
+  async function inspect(m) {
+    const { id, url } = m;
     const ctl = new AbortController();
     running.set(id, ctl);
     try {
-      const src = await Source.probe(url, { credentials, signal: ctl.signal });
       let last = 0;
-      const index = await loadIndex(src, (received, total) => {
+      const r = await resolve(m, ctl.signal, (received, total) => {
         const now = Date.now();
         if (received && received < total && now - last < INDEX_PROGRESS_MS) return;
         last = now;
         reply("index_progress", id, { received, total });
       });
+      if (r.compressed) throw compressedInner(r.compressed.entry);
+      const { src, index } = r;
       const tree = new Tree(index.entries);
-      keep(id, { src, index, tree });
+      keep(id, { src, index, tree, inner: (m.inner || []).join("\n") });
       reply("inspected", id, { report: report(src, index, tree) });
     } catch (e) {
       fail(id, e, url);
     } finally {
       running.delete(id);
     }
+  }
+
+  /** The link's zip and its index for an extraction, reusing the one read for the Cost Analysis. */
+  async function sourceForExtract(m, signal) {
+    if (m.inner?.length) {
+      const r = await resolve(m, signal);
+      if (r.compressed) throw compressedInner(r.compressed.entry);
+      return r;
+    }
+    const src = await Source.probe(m.url, { credentials: m.credentials, signal });
+    // The index read for the Cost Analysis is still good if the file didn't change since.
+    const known = inspected.get(String(m.id).split(":")[0]);
+    const same = known && !known.inner && known.src.url === m.url && known.src.size === src.size && known.src.etag === src.etag && known.src.lastModified === src.lastModified;
+    if (!same) return { src, index: await loadIndex(src) };
+    // Still part of what this job downloaded, just earlier.
+    src.indexBytes += known.src.indexBytes;
+    src.indexRequests += known.src.indexRequests;
+    return { src, index: known.index };
+  }
+
+  /** One pass from the first byte: a server without Range support, or a compressed inner zip. */
+  async function runStream(m, sink, filter, signal, onProgress) {
+    let open;
+    if (m.inner?.length) {
+      const r = await resolve(m, signal);
+      if (!r.compressed) {
+        // Stored inside: Range requests work after all.
+        return extract({ src: r.src, index: r.index, filter, sink, jobs: m.jobs || 4, resume: Boolean(m.resume), password: m.password ?? null, signal, onProgress });
+      }
+      const { src, index, entry } = r.compressed;
+      open = () => entryStream(src, index, entry, m.password ?? null, signal);
+    }
+    return streamExtract({ url: m.url, credentials: m.credentials, open, sink, filter, resume: Boolean(m.resume), password: m.password ?? null, signal, onProgress });
   }
 
   async function runExtract(m) {
@@ -164,30 +273,27 @@ export function createEngine({ post, openSink, version = "0", indexCache = null 
     try {
       sink = await openSink(m.target, String(m.id).split(":")[0]);
       reply("started", m.id, { output: sink.label });
-      const src = await Source.probe(m.url, { credentials: m.credentials, signal: ctl.signal });
-      // The index read for the Cost Analysis is still good if the file didn't change since.
-      const known = inspected.get(String(m.id).split(":")[0]);
-      const same = known && known.src.url === m.url && known.src.size === src.size && known.src.etag === src.etag && known.src.lastModified === src.lastModified;
-      const index = same ? known.index : await loadIndex(src);
-      if (same) {
-        // Still part of what this job downloaded, just earlier.
-        src.indexBytes += known.src.indexBytes;
-        src.indexRequests += known.src.indexRequests;
-      }
       const filter = new Filter(m.include || [], m.select);
-      const summary = await extract({
-        src,
-        index,
-        filter,
-        sink,
-        jobs: m.jobs || 4,
-        resume: Boolean(m.resume),
-        signal: ctl.signal,
-        onProgress: (p) => {
-          last = p;
-          post({ ...p, id: m.id });
-        },
-      });
+      const onProgress = (p) => {
+        last = p;
+        post({ ...p, id: m.id });
+      };
+      let summary;
+      if (m.stream) summary = await runStream(m, sink, filter, ctl.signal, onProgress);
+      else {
+        const { src, index } = await sourceForExtract(m, ctl.signal);
+        summary = await extract({
+          src,
+          index,
+          filter,
+          sink,
+          jobs: m.jobs || 4,
+          resume: Boolean(m.resume),
+          password: m.password ?? null,
+          signal: ctl.signal,
+          onProgress,
+        });
+      }
       reply("done", m.id, { ...summary, output: sink.label });
     } catch (e) {
       if (ctl.signal.aborted && ctl.signal.reason === "cancel") {
@@ -237,7 +343,7 @@ export function createEngine({ post, openSink, version = "0", indexCache = null 
             const e = tree.entryAt(m.path);
             if (!e) throw new Coded("bad_request", `there is no file ${JSON.stringify(m.path)} in the archive`);
             const end = regionEndOf(index)(e.offset);
-            reply("entry", m.id, { path: m.path, source: src.toJSON(), entry: { ...e, regionEnd: end }, unsupported: unsupportedReason(e) });
+            reply("entry", m.id, { path: m.path, source: src.toJSON(), entry: { ...e, regionEnd: end }, unsupported: unsupportedReason(e), encrypted: needsPassword(e) });
           });
         case "neighbors":
           // The viewer's Previous / Next: the files around this one in its folder.

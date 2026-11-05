@@ -189,6 +189,7 @@ fn run(cli: Cli) -> Result<()> {
                 on_progress: None,
                 stream,
                 resume: !overwrite,
+                drop_top: false,
             };
             let summary = extract::run(&opts)?;
             print!("{}", ui::render_summary(&summary));

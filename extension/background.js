@@ -6,17 +6,28 @@
 //
 // * the browser engine (engine/, run by offscreen.html, a hidden page that keeps working when the
 //   popup closes): reads the index, extracts, checks every file, and writes it into the chosen
-//   folder, or hands it to Chrome's own downloads (saved below) for Downloads;
-// * the Windows helper, if it is installed: only for servers that can't send parts of a file
-//   (stream mode) and to open a folder in Explorer.
+//   folder, or hands it to Chrome's own downloads (saved below) for Downloads. Servers that
+//   can't send parts of a file are read in one pass (stream mode), also by the browser engine;
+// * the Windows helper, if it is installed and turned on in Settings (Extract with the Windows
+//   helper): it extracts into <Downloads>\<zip name> itself, and Open folder opens Explorer
+//   there. The index, the file list and the preview still come from the browser engine; see
+//   route.js for the jobs the helper can't take.
 //
 // Both answer the same messages (see src/host.rs and engine/engine.js).
+//
+// A zip's password is kept in this worker's memory only (`passwords`), never in storage: after
+// the worker restarts, the popup asks for it again.
 
 import { REVIEW_URL, UNINSTALL_URL, rateCheck } from "./config.js";
 import { folderLabel, getFolder, removeFolder } from "./folder.js";
 import { fileNameFromUrl, folderNameFor, humanBytes, joinPath, sitePattern } from "./fmt.js";
+import { dropPreview, handlePreviewFetch, previewStats, registerPreview } from "./preview.js";
+import { engineFor } from "./route.js";
 import { loadSettings, migrate } from "./settings.js";
 import { indexCache, savedCount } from "./store.js";
+
+// The viewer's big files (video, audio, PDF) come from this worker, straight from the zip.
+self.addEventListener("fetch", handlePreviewFetch);
 
 const HOST = "com.linkunzip.host";
 const MENU_ID = "linkunzip-extract-link";
@@ -29,6 +40,7 @@ let enginePort = null; // the offscreen page's engine
 let engineInfo = null;
 let engineWaiters = [];
 const jobs = new Map(); // job id -> job
+const passwords = new Map(); // job id -> the zip's password
 const bypass = new Map(); // url -> expiry: downloads we started ourselves ("download normally")
 let currentId = null; // the job the popup shows
 
@@ -103,9 +115,15 @@ function prune() {
   });
 }
 
-/** A job and what belongs to it alone: a folder picked just for it. */
+/**
+ * A job and what belongs to it alone: a folder picked just for it, its password, and the one
+ * download kept in Chrome's list for "Open folder" (only the entry goes, the file stays).
+ */
 function forget(id) {
+  const keeper = jobs.get(id)?.keeper;
+  if (keeper) chrome.downloads.erase({ id: keeper.id }).catch(() => {});
   jobs.delete(id);
+  passwords.delete(id);
   removeFolder(`job:${id}`);
 }
 
@@ -350,7 +368,7 @@ async function askAboutJob(job, message, accepts) {
   let reply = await ask(message, match);
   if (reply.type === "error" && reply.code === "unknown_job") {
     const again = await ask(
-      { type: "inspect", id: job.id, url: job.url, credentials: await credentialsFor(job) },
+      { type: "inspect", id: job.id, url: job.url, inner: job.inner, credentials: await credentialsFor(job) },
       (m) => m.id === job.id && (m.type === "inspected" || m.type === "error"),
       120_000,
     );
@@ -516,10 +534,43 @@ chrome.notifications.onClicked.addListener(async (notificationId) => {
   await ready;
   const job = jobs.get(notificationId.replace(/^done:/, ""));
   if (job?.via === "helper" && job.result?.output) sendToHost({ type: "reveal", path: job.result.output });
-  else if (job?.target?.key === "downloads") chrome.downloads.showDefaultFolder();
+  else if (job?.target?.key === "downloads") await openDownloadsFolder(job);
   else await showPopup();
   chrome.notifications.clear(notificationId);
 });
+
+/**
+ * The job's folder inside Downloads, through the one download of it kept in Chrome's list (its
+ * least nested file): Chrome opens the folder holding it with the file selected. If that entry or
+ * file is gone, Downloads itself.
+ */
+async function openDownloadsFolder(job) {
+  const id = job?.keeper?.id;
+  const [item] = id != null ? await chrome.downloads.search({ id }).catch(() => []) : [];
+  if (item && item.exists !== false && item.state === "complete") {
+    try {
+      chrome.downloads.show(id);
+      return;
+    } catch {
+      // Fall back to Downloads below.
+    }
+  }
+  chrome.downloads.showDefaultFolder();
+}
+
+/**
+ * A file of `job` was just saved at `depth` (1 = right in Downloads/<zip name>): keep its entry
+ * in Chrome's download list if it is the least nested so far (the one before it goes), so "Open
+ * folder" has something to show. Every other entry is erased as before.
+ */
+function keepForOpening(job, id, depth) {
+  if (!job || (job.keeper && job.keeper.depth <= depth)) return false;
+  const old = job.keeper;
+  job.keeper = { id, depth };
+  if (old && old.id !== id) chrome.downloads.erase({ id: old.id }).catch(() => {});
+  persist();
+  return true;
+}
 
 // ---------------------------------------------------------------------------------------
 // Saving into Downloads
@@ -543,8 +594,11 @@ chrome.downloads.onChanged.addListener((d) => {
   saving.get(d.id)?.check({ state: d.state?.current, danger: d.danger?.current, error: d.error?.current, filename: d.filename?.current });
 });
 
-/** Download `url` (a blob URL of the engine's page) as `filename` inside Downloads. */
-async function saveDownload({ url, filename }) {
+/**
+ * Download `url` (a blob URL of the engine's page) as `filename` inside Downloads. `keep(id)`
+ * says, once the file is complete, whether its entry stays in Chrome's download list.
+ */
+async function saveDownload({ url, filename }, keep = () => false) {
   let id;
   try {
     id = await chrome.downloads.download({ url, filename, conflictAction: "overwrite", saveAs: false });
@@ -575,7 +629,7 @@ async function saveDownload({ url, filename }) {
     };
     w.check = ({ state, danger, error, filename }) => {
       if (filename) w.named = true;
-      if (state === "complete") return w.holding ? finish({ ok: true }, false) : finish({ ok: true });
+      if (state === "complete") return w.holding ? finish({ ok: true }, false) : finish({ ok: true }, !keep(id));
       if (state === "interrupted") {
         // Cancelled before it had a name: the Save As dialog was closed.
         if (error === "USER_CANCELED" && !w.named) return finish({ ok: false, code: "ask_where", error });
@@ -617,9 +671,10 @@ function syncDownloadUi() {
  */
 async function eraseFinishedSaves() {
   const ours = await chrome.downloads.search({ urlRegex: `^blob:${chrome.runtime.getURL("")}` }).catch(() => []);
+  const keepers = new Set([...jobs.values()].map((j) => j.keeper?.id).filter((id) => id != null));
   for (const d of ours) {
     const leftover = d.state === "complete" || (d.state === "interrupted" && !BLOCKED.has(d.error) && d.error !== "USER_CANCELED");
-    if (leftover && !saving.has(d.id)) chrome.downloads.erase({ id: d.id }).catch(() => {});
+    if (leftover && !saving.has(d.id) && !keepers.has(d.id)) chrome.downloads.erase({ id: d.id }).catch(() => {});
   }
 }
 
@@ -653,25 +708,6 @@ async function loginAllowed(url) {
 async function credentialsFor(job) {
   job.loginSent = await loginAllowed(job.url);
   return job.loginSent ? "include" : "omit";
-}
-
-/**
- * Headers for the helper (stream mode): the site's cookies only with the user's go-ahead, and
- * only once Chrome's optional "cookies" permission was granted (the popup asks when it's needed).
- */
-async function helperHeaders(job) {
-  if (!(await loginAllowed(job.url))) return {};
-  const headers = { "User-Agent": navigator.userAgent };
-  try {
-    if (await chrome.permissions.contains({ permissions: ["cookies"] })) {
-      const cookies = await chrome.cookies.getAll({ url: job.url });
-      if (cookies.length) headers.Cookie = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-    }
-  } catch {
-    // No access to that site's cookies: continue without.
-  }
-  if (job.pageUrl && /^https?:/i.test(job.pageUrl)) headers.Referer = job.pageUrl;
-  return headers;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -721,38 +757,46 @@ async function sendInspect(job) {
     return;
   }
   const credentials = await credentialsFor(job);
-  if (!(await toEngine({ type: "inspect", id: job.id, url: job.url, credentials }))) {
+  if (!(await toEngine({ type: "inspect", id: job.id, url: job.url, inner: job.inner, credentials }))) {
     fail(job, { code: "host", message: "LinkUnzip's engine didn't start." });
   }
   persist();
 }
 
-async function startExtract({ id, output, target, include = [], select, connections, force = false, stream = false, resume }) {
+/**
+ * "Open" on a .zip in the file list: a job of its own for the zip inside the zip, read through
+ * the outer one. The way back is its `parentId`.
+ */
+async function openInner({ id, path }) {
+  await ready;
+  const parent = jobs.get(id);
+  if (!parent) return { ok: false, error: "That job no longer exists." };
+  const inner = [...(parent.inner || []), path];
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const child = { id: `${parent.id}-${Date.now().toString(36)}`, url: parent.url, pageUrl: parent.pageUrl, name, inner, parentId: parent.id, outerName: parent.name, phase: "inspecting", createdAt: Date.now(), ...(await defaultTarget(name)) };
+  // An encrypted inner zip opens with the outer zip's password.
+  if (passwords.has(parent.id)) passwords.set(child.id, passwords.get(parent.id));
+  jobs.set(child.id, child);
+  await setCurrent(child.id);
+  await sendInspect(child);
+  return { ok: true, id: child.id };
+}
+
+async function startExtract({ id, output, target, include = [], select, connections, force = false, stream = false, resume, password }) {
   await ready;
   const job = jobs.get(id);
   if (!job) return { ok: false, error: "That job no longer exists." };
   const settings = await getSettings();
+  // Never stored with the job: the password stays in this worker's memory.
+  if (password) passwords.set(id, password);
   job.lastExtract = { id, output, target, include, select, connections, force, stream };
   job.startedAt = Date.now();
   job.stream = stream;
   job.progress = null;
   job.error = null;
 
-  if (stream) {
-    // Servers without Range support: only the Windows helper can read them (in one pass).
-    const info = await ensureHost();
-    if (!info) return { ok: false, error: "Reading this server in one pass needs the LinkUnzip helper for Windows. Download the zip normally instead." };
-    const path = joinPath(info.downloads_dir, joinPath("LinkUnzip", folderNameFor(job.name)));
-    job.via = "helper";
-    job.output = path;
-    job.phase = "extracting";
-    const ok = sendToHost({ type: "extract", id: `${id}:x`, url: job.url, output: path, include: [], jobs: 1, force, stream: true, headers: await helperHeaders(job) });
-    if (!ok) fail(job, hostError || friendlyHostError(""));
-    persist();
-    return { ok };
-  }
-
   if (!target) return { ok: false, error: "Choose a folder to extract into." };
+  if (target.key === "helper") return startWithHelper(job, { target, include, select, connections, force, stream, settings });
   job.via = "engine";
   job.target = target;
   job.output = output || job.output;
@@ -761,15 +805,55 @@ async function startExtract({ id, output, target, include = [], select, connecti
     type: "extract",
     id: `${id}:x`,
     url: job.url,
+    inner: job.inner,
     target,
     include: include.filter(Boolean),
     select,
     resume,
-    jobs: connections || settings.connections,
+    // Servers without Range support, and compressed zips inside zips: read in one pass.
+    stream,
+    password: passwords.get(id) ?? null,
+    jobs: stream ? 1 : connections || settings.connections,
     force,
     credentials: await credentialsFor(job),
   });
   if (!ok) fail(job, { code: "host", message: "LinkUnzip's engine didn't start." });
+  persist();
+  return { ok };
+}
+
+/**
+ * Settings > Extract with the Windows helper: the helper writes into its own Downloads folder,
+ * `<Downloads>\<zip name>`, with the zip's own top folder left out as the browser does it. It
+ * skips files that are already there and correct, so Resume needs nothing more.
+ */
+async function startWithHelper(job, { target, include, select, connections, force, stream, settings }) {
+  const helper = await ensureHost();
+  const route = engineFor(job, settings, helper);
+  if (route.via !== "helper") {
+    job.phase = job.report ? "ready" : job.phase;
+    persist();
+    return { ok: false, error: `The Windows helper can't extract this one: ${route.why}. Turn it off in Settings to extract in the browser.` };
+  }
+  const path = joinPath(helper.downloads_dir, target.sub || folderNameFor(job.name));
+  job.via = "helper";
+  job.target = target;
+  job.output = path;
+  job.phase = "extracting";
+  const ok = sendToHost({
+    type: "extract",
+    id: `${job.id}:x`,
+    url: job.url,
+    output: path,
+    include: include.filter(Boolean),
+    select,
+    jobs: stream ? 1 : connections || settings.connections,
+    force,
+    stream,
+    resume: true,
+    drop_top: true,
+  });
+  if (!ok) fail(job, hostError || friendlyHostError(""));
   persist();
   return { ok };
 }
@@ -874,10 +958,27 @@ const commands = {
   async saveFile(m) {
     await ready;
     syncDownloadUi();
-    return saveDownload(m);
+    const job = jobs.get(m.job);
+    return saveDownload(m, (id) => keepForOpening(job, id, m.depth ?? Infinity));
   },
   async showDownloads() {
     chrome.downloads.showDefaultFolder();
+    return { ok: true };
+  },
+  // "Open folder" for a job saved into Downloads: Downloads/<zip name>.
+  async openFolder({ id }) {
+    await ready;
+    await openDownloadsFolder(jobs.get(id));
+    return { ok: true };
+  },
+  openInner,
+  // From a zip inside a zip back to the one it came from.
+  async back({ id }) {
+    await ready;
+    const job = jobs.get(id);
+    if (!job?.parentId || !jobs.has(job.parentId)) return { ok: false };
+    await setCurrent(job.parentId);
+    persist();
     return { ok: true };
   },
   async list({ id, dir = "", offset = 0, limit = 500 }) {
@@ -903,7 +1004,27 @@ const commands = {
     const job = await readyJob(id);
     if (!job) return { ok: false, error: { message: "That zip is no longer open in LinkUnzip." } };
     const r = await askAboutJob(job, { type: "entry", id, path }, (m) => m.type === "entry" && m.path === path);
-    return r.type === "entry" ? { ok: true, ...r, name: job.name } : { ok: false, error: r };
+    if (r.type !== "entry") return { ok: false, error: r };
+    // An encrypted file opens with the password given for this zip, if there is one.
+    return { ok: true, ...r, name: job.name, password: r.encrypted ? passwords.get(id) ?? null : null };
+  },
+  // The viewer's video, audio and PDF: an address this worker answers from the zip (preview.js).
+  async previewStream({ source, entry, mime, password }) {
+    return { ok: true, ...(await registerPreview({ source, entry, mime, password })) };
+  },
+  async previewStats({ token }) {
+    return { ok: true, ...previewStats(token) };
+  },
+  async previewDone({ token }) {
+    await dropPreview(token);
+    return { ok: true };
+  },
+  // The viewer asked for the password of an encrypted file: kept for the zip, like Start does.
+  async setPassword({ id, password }) {
+    await ready;
+    if (!jobs.has(id) || !password) return { ok: false };
+    passwords.set(id, password);
+    return { ok: true };
   },
   // The viewer's Previous / Next.
   async neighbors({ id, path }) {

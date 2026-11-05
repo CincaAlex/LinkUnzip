@@ -3,16 +3,23 @@
 // throwaway profile deletes afterwards).
 //
 //   set E2E_MODULES=<a folder where `npm i puppeteer-core` ran>
-//   node tools/e2e/real_hosts.mjs [blender] [coco] [--headful]
+//   node tools/e2e/real_hosts.mjs [blender] [coco] [github] [hf] [--headful]
 //
 // blender: Blender 4.2 for Windows, every file (5,518 files, about 925 MB written).
 // coco:    one photo out of COCO train2017 (18 GB zip, 118,287 files).
+// github:  a GitHub release asset (redirects to release-assets.githubusercontent.com), every file.
+// hf:      one photo out of a Hugging Face dataset zip (redirects to its CDN with a signed URL).
+//
+// Before the extraction each host's If-Range answer is printed, from Node: its validators, the
+// probe's check (If-Range on or off) and what a wrong If-Range gets (it must be 200).
 
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { Source } from "../../extension/engine/source.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -25,8 +32,22 @@ const MB = (n) => `${(n / 1048576).toFixed(1)} MB`;
 const CASES = {
   blender: { url: "https://download.blender.org/release/Blender4.2/blender-4.2.0-windows-x64.zip", select: null },
   coco: { url: "http://images.cocodataset.org/zips/train2017.zip", select: { paths: ["train2017/000000000009.jpg"], exclude: [] } },
+  github: { url: "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip", select: null },
+  hf: { url: "https://huggingface.co/datasets/nlphuji/flickr30k/resolve/main/flickr30k-images.zip", select: { marks: { "": false, "flickr30k-images/1000092795.jpg": true } } },
 };
 const wanted = process.argv.slice(2).filter((a) => CASES[a]);
+
+/** What the host does with If-Range: validators, the probe's check, and a wrong one. */
+async function ifRangeReport(name, url) {
+  const src = await Source.probe(url, { credentials: "omit" });
+  const resp = await fetch(url, { headers: { Range: "bytes=0-0", "If-Range": src.etag ? '"linkunzip-wrong"' : "Thu, 01 Jan 1970 00:00:00 GMT" } });
+  resp.body?.cancel().catch(() => {});
+  // 200: the host honours If-Range. 206: it ignores it, which is harmless (the ETag or
+  // Last-Modified check after every answer still catches a changed file) but adds nothing.
+  const how = resp.status === 200 ? "honoured" : resp.status === 206 ? "ignored (the check after each answer still catches a change)" : `answered ${resp.status}`;
+  const ok = resp.status === 200 || (resp.status === 206 && (src.etag || src.lastModified));
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ETag ${src.etag || "none"}, Last-Modified ${src.lastModified || "none"}; If-Range ${src.ifRange ? `sent (${src.ifRange})` : "off"}, ${how}`);
+}
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lu-real-"));
@@ -63,6 +84,7 @@ async function main() {
     };
     for (const name of wanted.length ? wanted : Object.keys(CASES)) {
       const c = CASES[name];
+      await ifRangeReport(name, c.url).catch((e) => console.log(`FAIL  ${name}: If-Range check: ${e.message}`));
       const t0 = Date.now();
       const { id: j } = await send("inspect", { url: c.url });
       const ready = await until(j, ["ready", "error"], 120000);

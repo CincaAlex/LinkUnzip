@@ -135,6 +135,9 @@ enum Request {
         select: Option<Selection>,
         #[serde(default)]
         headers: BTreeMap<String, String>,
+        /// Leave out the zip's own top folder when it is named like `output` (feature `drop_top`).
+        #[serde(default)]
+        drop_top: bool,
     },
     Cancel {
         id: String,
@@ -316,6 +319,7 @@ pub fn serve(
                 resume,
                 select,
                 headers,
+                drop_top,
             } => {
                 workers.push(spawn_job(&send, &jobs, id, move |send, job, id| {
                     let request = ExtractRequest {
@@ -328,6 +332,7 @@ pub fn serve(
                         resume,
                         select,
                         headers,
+                        drop_top,
                     };
                     extract_job(send, job, id, request)
                 }));
@@ -439,6 +444,8 @@ pub fn features() -> Vec<&'static str> {
         "select",
         "resume",
         "error_codes",
+        "marks",
+        "drop_top",
     ];
     if cfg!(windows) {
         features.insert(0, "pick_folder");
@@ -686,6 +693,7 @@ struct ExtractRequest {
     resume: bool,
     select: Option<Selection>,
     headers: BTreeMap<String, String>,
+    drop_top: bool,
 }
 
 fn extract_job(send: &Sender, job: &Arc<Job>, id: &str, request: ExtractRequest) {
@@ -699,6 +707,7 @@ fn extract_job(send: &Sender, job: &Arc<Job>, id: &str, request: ExtractRequest)
         resume,
         select,
         headers,
+        drop_top,
     } = request;
     let prepared = checked_headers(headers).and_then(|headers| {
         if !(1..=64).contains(&connections) {
@@ -756,6 +765,7 @@ fn extract_job(send: &Sender, job: &Arc<Job>, id: &str, request: ExtractRequest)
         on_progress: Some(on_progress),
         stream,
         resume,
+        drop_top,
     };
     match extract::run(&opts) {
         Ok(s) => send.send(json!({

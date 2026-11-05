@@ -1,20 +1,25 @@
-// End-to-end test of the browser extension: real Chrome, the real extension, the real native
-// host (the installed linkunzip.exe), and a local Range server. It drives the popup like a user
-// would and checks the files that land on disk against the generator's manifest.
+// End-to-end test of the popup: real Chrome, the extension as it ships (the browser engine, no
+// helper), and local servers. It drives the popup like a user would and checks the files that
+// land in Downloads against the generator's manifest; error cards and other states it can't
+// produce for real are shown with canned state (the stubbed views).
 //
-//   set E2E_MODULES=%LOCALAPPDATA%\linkunzip-e2e        (a folder where `npm i puppeteer-core` ran)
-//   dist\linkunzip-setup.exe  (or: linkunzip host install) (once)
-//   node tools/e2e/extension.mjs [--shots <dir>]
+//   python tools/make_test_zips.py all-small --out <data>
+//   set E2E_MODULES=<a folder where `npm i puppeteer-core` ran>
+//   set E2E_DATA=<data>          (default %LOCALAPPDATA%\linkunzip-test\engine-data)
+//   node tools/e2e/extension.mjs [--shots <dir>] [--stubs-only]
 //
-// It needs a demo archive: python tools/make_test_zips.py demo --out <dir> --size-gb 1.2
-// (point E2E_DATA at that folder; default %LOCALAPPDATA%\linkunzip-test\demo-data).
+// The real runs use a copy of the extension with every site allowed (a test can't click Chrome's
+// permission prompt); the manifest itself is checked to ask for no site at install.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { downloadsName } from "../../extension/engine/dl-sink.js";
+import { FEATURES } from "../../extension/engine/engine.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -22,7 +27,7 @@ const require = createRequire(`${process.env.E2E_MODULES || root}/`);
 const puppeteer = require("puppeteer-core");
 
 const LOCAL = process.env.LOCALAPPDATA || os.tmpdir();
-const DATA = process.env.E2E_DATA || path.join(LOCAL, "linkunzip-test", "demo-data");
+const DATA = process.env.E2E_DATA || path.join(LOCAL, "linkunzip-test", "engine-data");
 const WORK = path.join(LOCAL, "linkunzip-e2e");
 const SHOTS = process.argv.includes("--shots")
   ? process.argv[process.argv.indexOf("--shots") + 1]
@@ -48,20 +53,48 @@ function check(ok, what) {
   if (!ok) failures += 1;
 }
 
-/** A check that needs a newer helper than the installed one. */
-function skip(what, why) {
-  console.log(`SKIP  ${what} (${why})`);
+/** A copy of extension/ with every site allowed at install (same key, so the same id). */
+function testCopy() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lu-popup-ext-"));
+  fs.cpSync(EXT, dir, { recursive: true });
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+  manifest.host_permissions = ["<all_urls>"];
+  fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify(manifest, null, 2));
+  return dir;
 }
 
-/** What the real helper said in hello (stored by the background). */
-const realHostInfo = (page) => page.evaluate(() => chrome.storage.session.get("hostInfo").then((s) => s.hostInfo || {}));
+/** A Chrome profile whose downloads go into `dir`. */
+function profileWithDownloads(dir) {
+  const profile = fs.mkdtempSync(path.join(WORK, "profile-"));
+  fs.mkdirSync(path.join(profile, "Default"), { recursive: true });
+  fs.writeFileSync(path.join(profile, "Default", "Preferences"), JSON.stringify({ download: { default_directory: dir, prompt_for_download: false, directory_upgrade: true } }));
+  return profile;
+}
 
-/** Verify an extracted folder against the demo manifest; `only` limits it to some names. */
-function verifyAgainstManifest(folder, only = null) {
-  const args = [path.join(root, "tools", "verify_extract.py"), folder, path.join(DATA, "demo.manifest.json")];
-  for (const name of only || []) args.push("--only", name);
-  const r = spawnSync("python", args, { encoding: "utf8" });
-  return { ok: r.status === 0, last: (r.stdout || r.stderr || "").trim().split("\n").pop() };
+/**
+ * The files of `<kind>.manifest.json` saved through Chrome's downloads into `folder` (with the
+ * names Chrome takes), compared by SHA-256; `only` limits it to some names.
+ */
+function verifyDownloads(folder, kind, only = null) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(DATA, `${kind}.manifest.json`), "utf8"));
+  const files = manifest.files.filter((f) => !only || only.includes(f.name));
+  let bad = 0;
+  for (const f of files) {
+    const p = path.join(folder, ...downloadsName(f.name.split("/")).parts);
+    if (!fs.existsSync(p) || sha256(p) !== f.sha256) bad += 1;
+  }
+  const extra = listFiles(folder).length - files.length;
+  return { ok: bad === 0 && extra === 0, last: `${files.length - bad}/${files.length} files right${extra ? `, ${extra} more than wanted` : ""}` };
+}
+
+function sha256(file) {
+  return require("node:crypto").createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+/** A copy of `<kind>.zip` under another name, so each run gets its own Downloads folder. */
+function zipCopy(kind, name) {
+  fs.copyFileSync(path.join(DATA, `${kind}.zip`), path.join(DATA, name));
+  return name;
 }
 
 function serve(port, { mbps = 0, rangeless = false } = {}) {
@@ -80,7 +113,7 @@ function serve(port, { mbps = 0, rangeless = false } = {}) {
 async function waitForPort(port) {
   for (let i = 0; i < 50; i++) {
     try {
-      await fetch(`http://127.0.0.1:${port}/demo.zip`, { method: "HEAD" });
+      await fetch(`http://127.0.0.1:${port}/small.zip`, { method: "HEAD" });
       return;
     } catch {
       await sleep(100);
@@ -102,15 +135,10 @@ async function openPopup(browser, params = "") {
   return page;
 }
 
-const HOST_INFO_V1 = { type: "hello", version: "0.2.0", os: "windows", downloads_dir: "C:\\Users\\me\\Downloads" };
-const HOST_INFO_V2 = {
-  ...HOST_INFO_V1,
-  version: "0.2.1",
-  protocol: 2,
-  features: ["pick_folder", "list", "search", "measure", "select", "resume", "error_codes", "marks", "tick_matches"],
-};
+/** The browser engine's hello, as the background stores it (`engineInfo`). */
+const ENGINE_INFO = { type: "hello", version: "1.2.0", protocol: 2, features: FEATURES, os: "browser", engine: "browser", downloads_dir: "" };
 
-/** A job that has read its index (`ready`), with a report like the helper's. */
+/** A job that has read its index (`ready`), with a report like the engine's. */
 function readyJob(report = {}) {
   const GB = 1024 ** 3;
   return {
@@ -133,7 +161,7 @@ function readyJob(report = {}) {
 
 /**
  * Open the popup with chrome.storage.session and the messages to the background replaced by canned
- * answers, for states the installed helper cannot produce. `session` is what the popup reads at
+ * answers, for states the real runs don't reach. `session` is what the popup reads at
  * start; `replies` maps a command to its answer (default {ok: true}). In the page, window.__sent
  * holds every message sent and window.__emit(changes) plays a storage change.
  */
@@ -247,7 +275,7 @@ async function openStubbedPopup(browser, { session, replies = {}, local = null, 
         },
       };
     }
-  }, { session, replies: { ping: { ok: true, info: session.hostInfo }, ...replies }, local, archive });
+  }, { session, replies: { ping: { ok: true, info: session.engineInfo }, ...replies }, local, archive });
   await page.goto(`chrome-extension://${EXT_ID}/popup.html${params}`);
   return page;
 }
@@ -294,37 +322,34 @@ const text = (page, sel) => page.$eval(sel, (el) => el.textContent).catch(() => 
 
 async function run() {
   if (!STUBS_ONLY) {
-    if (!fs.existsSync(path.join(DATA, "demo.zip"))) throw new Error(`no demo.zip in ${DATA}`);
+    if (!fs.existsSync(path.join(DATA, "small.zip"))) throw new Error(`no small.zip in ${DATA} (python tools/make_test_zips.py all-small --out <data>)`);
     serve(FAST);
-    serve(SLOW, { mbps: 6 });
+    serve(SLOW, { mbps: 0.4 });
     serve(NORANGE, { rangeless: true });
     await Promise.all([FAST, SLOW, NORANGE].map(waitForPort));
   }
 
-  const profile = fs.mkdtempSync(path.join(WORK, "profile-"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(EXT, "manifest.json"), "utf8"));
+  check(
+    !("host_permissions" in manifest) && manifest.optional_host_permissions?.includes("<all_urls>") && !manifest.optional_permissions?.includes("cookies"),
+    "the manifest asks for no site at install (optional_host_permissions only) and no cookies permission",
+  );
   const downloads = fs.mkdtempSync(path.join(WORK, "dl-"));
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: true,
-    userDataDir: profile,
-    enableExtensions: [EXT],
+    pipe: true,
+    userDataDir: profileWithDownloads(downloads),
+    enableExtensions: [STUBS_ONLY ? EXT : testCopy()],
     args: ["--no-first-run", "--no-default-browser-check", "--window-size=900,900"],
   });
   try {
-    await browser.target().createCDPSession().then((s) =>
-      s.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads }),
-    );
     const worker = await browser.waitForTarget(
       (t) => t.type() === "service_worker" && t.url().startsWith(`chrome-extension://${EXT_ID}/`),
       { timeout: 20000 },
     );
     check(Boolean(worker), `extension loaded with the expected id ${EXT_ID}`);
-    const manifest = JSON.parse(fs.readFileSync(path.join(EXT, "manifest.json"), "utf8"));
-    check(
-      !("host_permissions" in manifest) && manifest.optional_host_permissions?.includes("<all_urls>"),
-      "the manifest asks for no site at install (optional_host_permissions only)",
-    );
-    // A first install opens the setup page, which finds the installed helper by itself.
+    // A first install opens the setup page.
     const welcomeTarget = await browser
       .waitForTarget((t) => t.url() === `chrome-extension://${EXT_ID}/welcome.html`, { timeout: 10000 })
       .catch(() => null);
@@ -344,35 +369,23 @@ async function run() {
     if (welcomeTarget) {
       const welcome = await welcomeTarget.page();
       await welcome.setViewport({ width: 900, height: 900 });
-      const found = await welcome
-        .waitForSelector('#step-helper[data-state="done"]', { timeout: 15000 })
-        .then(() => true, () => false);
-      check(found, `setup page detects the helper (${await text(welcome, "#helper-status")})`);
-      // An older helper counts as installed; the update is only offered.
-      // The background saves hostInfo a moment after the hello (debounced), so wait for it.
-      const info = await (await worker.worker()).evaluate(async () => {
-        for (let i = 0; i < 30; i++) {
-          const { hostInfo } = await chrome.storage.session.get("hostInfo");
-          if (hostInfo) return hostInfo;
-          await new Promise((r) => setTimeout(r, 100));
-        }
-        return {};
-      });
-      const offered = await welcome.$eval("#helper-update", (el) => !el.hidden);
-      check(offered === (info.protocol ?? 1) < 2, `the setup page offers the update only for an older helper (protocol ${info.protocol ?? 1}, offered: ${offered})`);
+      await welcome.waitForFunction(() => document.getElementById("folder-status").textContent !== "", { timeout: 10000 }).catch(() => {});
+      const steps = await welcome.evaluate(() => ({
+        ids: [...document.querySelectorAll("li.step")].map((s) => s.id),
+        sites: document.getElementById("step-sites").dataset.state,
+        allow: !document.getElementById("allow-all").hidden,
+        folder: document.getElementById("folder-status").textContent,
+        helper: Boolean(document.getElementById("step-helper")),
+      }));
+      // The real-run copy has every site allowed; the stubs-only run loads the extension as it ships.
+      const wantSites = STUBS_ONLY ? "next" : "done";
+      check(
+        steps.ids.includes("step-sites") && steps.ids.includes("step-folder") && steps.ids.includes("step-try") && !steps.helper &&
+          steps.sites === wantSites && steps.allow === (wantSites === "next") && /Downloads/.test(steps.folder),
+        `the setup page: allow sites (${steps.sites}), where files go ("${steps.folder}"), try it; no helper step`,
+      );
       await shot(welcome, "00-welcome");
       await welcome.close();
-
-      // Update mode, from the popup's card: it waits for the new helper.
-      const upd = await browser.newPage();
-      await upd.setViewport({ width: 900, height: 900 });
-      await upd.goto(`chrome-extension://${EXT_ID}/welcome.html?update=1`);
-      const wantState = (info.protocol ?? 1) < 2 ? "next" : "done";
-      const updOk = await upd.waitForSelector(`#step-helper[data-state="${wantState}"]`, { timeout: 15000 }).then(() => true, () => false);
-      const updTitle = await text(upd, "#helper-title");
-      check(updOk && updTitle === "Update the LinkUnzip helper", `the setup page in update mode: "${updTitle}", ${await text(upd, "#helper-status")}`);
-      await shot(upd, "00b-welcome-update");
-      await upd.close();
     }
     lastWorker = worker;
     if (STUBS_ONLY) {
@@ -380,172 +393,130 @@ async function run() {
       return;
     }
 
-    // ---- 1. paste a URL, inspect, extract ---------------------------------------------------
+    // ---- 1. paste a URL, read the index, extract into Downloads ------------------------------
+    const jobsNow = async () => (await (await worker.worker()).evaluate(() => chrome.storage.session.get(["jobs", "current"])));
+    const currentJob = async () => {
+      const s = await jobsNow();
+      return s.jobs?.[s.current] || null;
+    };
     let popup = await openPopup(browser);
     lastPopup = popup;
-    lastWorker = worker;
     await popup.waitForSelector('#host-chip[data-state="ok"]', { timeout: 20000 });
-    check(true, `popup reaches the native host (${await text(popup, "#host-chip")})`);
-    const pickInfo = await realHostInfo(popup);
-    if ((pickInfo.protocol ?? 1) < 2) {
-      const card = await popup.waitForSelector(".card.update", { timeout: 5000 }).then(() => true, () => false);
-      check(card, "an older helper gets the non-blocking 'A newer LinkUnzip helper is available' card");
-    } else {
-      check(!(await popup.$(".card.update")), "no update card with a current helper");
-    }
+    check(/In browser/.test(await text(popup, "#host-chip")), `popup: the engine runs in the browser (${await text(popup, "#host-chip")})`);
     await shot(popup, "01-pick");
 
-    await popup.type("input[type=url]", `http://127.0.0.1:${FAST}/demo.zip`);
+    await popup.type("input[type=url]", `http://127.0.0.1:${FAST}/${zipCopy("small", "first.zip")}`);
     await popup.keyboard.press("Enter");
-    await popup.waitForSelector(".compare", { timeout: 30000 });
-    const cmp = await popup.$$eval(".cmp-total", (els) => els.map((e) => e.textContent));
-    check(cmp.length === 2 && cmp[0] !== cmp[1], `comparison shows two different totals: ${cmp.join(" vs ")}`);
-    const realBrowse = await popup.$$eval("button.browse", (bs) => bs.filter((b) => !b.hidden).length);
-    const realProtocol = await popup.evaluate(() => chrome.storage.session.get("hostInfo").then((s) => s.hostInfo?.protocol ?? 1));
-    check(realProtocol >= 2 || realBrowse === 0, `Browse... only when the helper has pick_folder (protocol ${realProtocol}, ${realBrowse} shown)`);
+    await popup.waitForSelector(".fl-row", { timeout: 30000 });
+    const folderShown = await text(popup, ".folder-name");
+    const go = await text(popup, "#extract-btn");
+    check(folderShown === "Downloads > first" && /Start Extraction \(203 files/.test(go), `ready: "${go}" into ${folderShown}`);
     await shot(popup, "02-ready");
-
-    const out1 = path.join(WORK, "out", "demo");
-    fs.rmSync(out1, { recursive: true, force: true });
-    await setFolderField(popup, out1);
-    await popup.click("#actions-slot button.btn.primary");
-    await popup.waitForSelector(".big-pct", { timeout: 15000 });
+    await popup.click("#extract-btn");
+    // Into Downloads the toolbar popup starts it right there and shows the progress.
     await popup.waitForSelector(".zero-line", { timeout: 180000 });
     const zeroText = await text(popup, ".zero-line");
     check(/Zip stored on disk\s*0 B/.test(zeroText), `done view says "${zeroText}"`);
+    const doneLabels = await buttonLabels(popup);
+    check(doneLabels.includes("Open folder"), `done view offers Open folder (${doneLabels.join(" | ")})`);
     await shot(popup, "04-done");
+    const v1 = verifyDownloads(path.join(downloads, "first"), "small");
+    check(v1.ok, `every file in Downloads/first matches the manifest (${v1.last})`);
+    const kept = (await currentJob())?.keeper;
+    const keptItem = await (await worker.worker()).evaluate((id) => chrome.downloads.search({ id }).then((x) => x[0] || null), kept?.id ?? -1);
+    check(Boolean(keptItem?.exists) && keptItem.filename.startsWith(path.join(downloads, "first")), `Open folder has a file to show: ${keptItem ? path.relative(downloads, keptItem.filename) : "none"}`);
+    const granted = await sw0.evaluate(() => chrome.permissions.getAll()).catch(async () => (await worker.worker()).evaluate(() => chrome.permissions.getAll()));
+    const done1 = await currentJob();
+    check(done1?.loginSent === false && !(granted.permissions || []).includes("cookies"), "the public link worked with no login sent and no cookies permission");
 
-    const verify = spawnSync("python", [path.join(root, "tools", "verify_extract.py"), out1, path.join(DATA, "demo.manifest.json")], { encoding: "utf8" });
-    check(verify.status === 0, `every extracted file matches the manifest (${(verify.stdout || "").trim().split("\n").pop()})`);
-    const sw1 = await worker.worker();
-    const granted = await sw1.evaluate(() => chrome.permissions.getAll());
-    const { jobs: jobs1 = {} } = await sw1.evaluate(() => chrome.storage.session.get("jobs"));
-    const done1 = Object.values(jobs1).find((j) => j.phase === "done");
-    check(
-      (granted.origins || []).length === 0 && done1?.loginSent === false,
-      `the public link worked with no site permission and no login sent (origins: ${JSON.stringify(granted.origins)})`,
-    );
-    const realFeatures = (await realHostInfo(popup)).features || [];
-
-    // ---- 1b. choose files (helpers with list + select) ------------------------------------------
-    if (realFeatures.includes("list") && realFeatures.includes("select")) {
-      await popup.click("#actions-slot button.btn:not(.primary)"); // "Extract another"
-      await popup.waitForSelector("input[type=url]");
-      await popup.type("input[type=url]", `http://127.0.0.1:${FAST}/demo.zip`);
-      await popup.keyboard.press("Enter");
-      await popup.waitForSelector(".compare", { timeout: 30000 });
-      await popup.waitForSelector(".fl-row", { timeout: 15000 });
-      const firstFolder = (await rowNames(popup)).find((n) => n.endsWith("/"));
-      await clickRow(popup, firstFolder);
-      const demo = JSON.parse(fs.readFileSync(path.join(DATA, "demo.manifest.json"), "utf8"));
-      const keep = demo.files.filter((f) => !f.name.startsWith(firstFolder)).map((f) => f.name);
-      await popup.waitForFunction((p) => (document.querySelector(".fl-totals")?.textContent || "").startsWith(p), { timeout: 15000 }, `${keep.length} files`);
-      await shot(popup, "02b-ready-chosen");
-      const outSel = path.join(WORK, "out", "selected");
-      fs.rmSync(outSel, { recursive: true, force: true });
-      await setFolderField(popup, outSel);
-      await popup.click("#actions-slot button.btn.primary");
-      await popup.waitForSelector(".zero-line", { timeout: 180000 });
-      const v = verifyAgainstManifest(outSel, keep);
-      check(v.ok, `a real extraction of the ticked files (all but ${firstFolder}) matches the manifest (${v.last})`);
-    } else {
-      skip("real extraction of ticked files", "the installed helper has no list/select");
-    }
-
-    // ---- 2. stop in the middle ------------------------------------------------------------------
-    await popup.click("#actions-slot button.btn:not(.primary)"); // "Extract another"
+    // ---- 1b. choose files: untick a folder ------------------------------------------------------
+    await clickButton(popup, "Extract another");
     await popup.waitForSelector("input[type=url]");
-    await popup.type("input[type=url]", `http://127.0.0.1:${SLOW}/demo.zip`);
+    await popup.type("input[type=url]", `http://127.0.0.1:${FAST}/${zipCopy("small", "chosen.zip")}`);
     await popup.keyboard.press("Enter");
-    await popup.waitForSelector(".compare", { timeout: 30000 });
-    const out2 = path.join(WORK, "out", "stopped");
-    fs.rmSync(out2, { recursive: true, force: true });
-    await setFolderField(popup, out2);
-    await popup.click("#actions-slot button.btn.primary");
-    await popup.waitForFunction(() => parseInt(document.querySelector(".big-pct")?.textContent || "0") >= 3, { timeout: 60000 });
-    if (realFeatures.includes("resume")) {
-      // Let a couple of files finish, so Resume has something to skip.
-      await popup.waitForFunction(() => parseInt(document.querySelector(".stat b")?.textContent.replace(/,/g, "") || "0") >= 2, { timeout: 120000 });
-    }
+    await popup.waitForSelector(".fl-row", { timeout: 30000 });
+    const firstFolder = (await rowNames(popup)).find((n) => n.endsWith("/"));
+    await clickRow(popup, firstFolder);
+    const small = JSON.parse(fs.readFileSync(path.join(DATA, "small.manifest.json"), "utf8"));
+    const keep = small.files.filter((f) => !f.name.startsWith(firstFolder)).map((f) => f.name);
+    await popup.waitForFunction((p) => (document.querySelector(".fl-totals")?.textContent || "").startsWith(p), { timeout: 15000 }, `${keep.length} files`);
+    await shot(popup, "02b-ready-chosen");
+    await popup.click("#extract-btn");
+    await popup.waitForSelector(".zero-line", { timeout: 180000 });
+    const v1b = verifyDownloads(path.join(downloads, "chosen"), "small", keep);
+    check(v1b.ok, `a real extraction of the ticked files (all but ${firstFolder}) matches the manifest (${v1b.last})`);
+
+    // ---- 2. stop in the middle, then Resume -------------------------------------------------------
+    await clickButton(popup, "Extract another");
+    await popup.waitForSelector("input[type=url]");
+    await popup.type("input[type=url]", `http://127.0.0.1:${SLOW}/${zipCopy("small", "stopped.zip")}`);
+    await popup.keyboard.press("Enter");
+    await popup.waitForSelector("#extract-btn", { timeout: 60000 });
+    await popup.click("#extract-btn");
+    await popup.waitForSelector(".big-pct", { timeout: 15000 });
+    // Let some files finish, so Resume has something to skip.
+    await popup.waitForFunction(() => parseInt(document.querySelector(".stat b")?.textContent.replace(/,/g, "") || "0") >= 5, { timeout: 120000 });
     await shot(popup, "03-extracting");
     await popup.click("#actions-slot button.btn.danger");
     await popup.waitForFunction(() => document.querySelector("h1")?.textContent === "Stopped", { timeout: 30000 });
-    const parts = fs.existsSync(out2) ? listFiles(out2).filter((f) => f.endsWith(".part")) : [];
-    check(parts.length === 0, `stopping leaves no .part files (${parts.length})`);
+    const halfSaved = listFiles(path.join(downloads, "stopped")).filter((f) => /\.crdownload$/i.test(f));
+    check(halfSaved.length === 0, `stopping leaves no half-saved files (${halfSaved.length})`);
     await shot(popup, "05-stopped");
+    const finishedBefore = (await currentJob())?.result?.files_done || 0;
+    await clickButton(popup, "Resume");
+    await popup.waitForSelector(".zero-line", { timeout: 300000 });
+    const resumed = await currentJob();
+    const v2 = verifyDownloads(path.join(downloads, "stopped"), "small");
+    check(
+      v2.ok && finishedBefore > 0 && resumed?.result?.skipped_existing >= finishedBefore,
+      `Resume after Stop skips the ${resumed?.result?.skipped_existing} saved files and completes the folder (${v2.last})`,
+    );
+    const carried = resumed?.progress?.skipped_files;
+    check(carried >= finishedBefore && carried > 0, `the resumed progress counts the ${carried} files already there`);
+    await shot(popup, "05b-resumed");
 
-    // Resume (helpers with resume): only what is missing is downloaded, the result is complete.
-    const stoppedLabels = await buttonLabels(popup);
-    if (realFeatures.includes("resume")) {
-      const sw2 = await worker.worker();
-      const stoppedJob = await sw2.evaluate(() => chrome.storage.session.get(["jobs", "current"]).then((s) => s.jobs[s.current]));
-      const finishedBefore = stoppedJob?.result?.files_done || 0;
-      await clickButton(popup, "Resume");
-      await popup.waitForSelector(".zero-line", { timeout: 300000 });
-      const resumed = await sw2.evaluate(() => chrome.storage.session.get(["jobs", "current"]).then((s) => s.jobs[s.current]));
-      const v = verifyAgainstManifest(out2);
-      check(
-        v.ok && resumed?.result?.skipped_existing >= finishedBefore && finishedBefore > 0,
-        `Resume after Stop skips the ${resumed?.result?.skipped_existing} finished files and completes the folder (${v.last})`,
-      );
-      // The helper's progress says what was already there, so the popup's bar carries on
-      // instead of starting again at 0 %.
-      const carried = resumed?.progress?.skipped_files;
-      check(carried >= finishedBefore && carried > 0, `the resumed progress counts the ${carried} files already there`);
-      await shot(popup, "05b-resumed");
-    } else {
-      check(!stoppedLabels.includes("Resume"), "no Resume with a helper that can't skip finished files");
-      skip("real Resume after Stop", "the installed helper has no resume");
-    }
-
-    // ---- 3. a server without Range support ---------------------------------------------------
-    await popup.click("#actions-slot button.btn:last-child"); // "Close"
+    // ---- 3. a server without Range support: one pass ---------------------------------------------
+    await clickButton(popup, "Extract another");
     await popup.waitForSelector("input[type=url]");
-    await popup.type("input[type=url]", `http://127.0.0.1:${NORANGE}/demo.zip`);
+    await popup.type("input[type=url]", `http://127.0.0.1:${NORANGE}/${zipCopy("small", "onepass.zip")}`);
     await popup.keyboard.press("Enter");
     await popup.waitForSelector(".tick.bad", { timeout: 30000 });
     const title = await text(popup, "h1");
-    check(/can.t send parts/.test(title), `no-Range server explained: "${title}"`);
+    check(/only from the start/.test(title), `no-Range server explained: "${title}"`);
     await shot(popup, "06-no-range");
-
-    // ...but it can still be streamed in one pass.
-    const out3 = path.join(WORK, "out", "streamed");
-    fs.rmSync(out3, { recursive: true, force: true });
-    await setFolderField(popup, out3);
-    await popup.click("#actions-slot button.btn.primary"); // "Stream it anyway"
-    await popup.waitForSelector(".big-pct", { timeout: 15000 });
+    await clickButton(popup, "Extract everything (one pass)");
     await popup.waitForSelector(".zero-line", { timeout: 180000 });
     const streamed = await text(popup, ".kv");
-    check(/1 pass/.test(streamed), `stream mode finished in one pass (${streamed.replace(/\s+/g, " ").trim().slice(0, 60)}...)`);
-    const verify3 = spawnSync("python", [path.join(root, "tools", "verify_extract.py"), out3, path.join(DATA, "demo.manifest.json")], { encoding: "utf8" });
-    check(verify3.status === 0, `streamed files match the manifest (${(verify3.stdout || "").trim().split("\n").pop()})`);
-    await popup.click("#actions-slot button.btn:not(.primary)");
+    check(/1 pass/.test(streamed), `one pass finished (${streamed.replace(/\s+/g, " ").trim().slice(0, 60)}...)`);
+    const v3 = verifyDownloads(path.join(downloads, "onepass"), "small");
+    check(v3.ok, `the files read in one pass match the manifest (${v3.last})`);
+    await shot(popup, "06b-one-pass-done");
 
     // ---- 4. catch a .zip download ---------------------------------------------------------------
-    await popup.evaluate(() => chrome.storage.local.set({ settings: { catchDownloads: true, loginWhenNeeded: true, connections: 4, baseFolder: "" } }));
+    await popup.evaluate(async () => {
+      const { settings = {} } = await chrome.storage.local.get("settings");
+      await chrome.storage.local.set({ settings: { ...settings, catchDownloads: true } });
+    });
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${FAST}/`);
-    await page.click('a[href="demo.zip"]');
-    const swHandle = await worker.worker();
-    let job = null;
-    for (let i = 0; i < 60 && !job; i++) {
+    await page.click('a[href="first.zip"]');
+    let caught = null;
+    for (let i = 0; i < 60 && !caught; i++) {
       await sleep(250);
-      const { jobs = {} } = await swHandle.evaluate(() => chrome.storage.session.get("jobs"));
-      job = Object.values(jobs).find((j) => j.url.endsWith("/demo.zip") && j.phase === "ready") || null;
+      const { jobs = {} } = await jobsNow();
+      caught = Object.values(jobs).find((j) => j.caught && j.url.endsWith("/first.zip") && j.phase === "ready") || null;
     }
-    check(Boolean(job), "a .zip download was caught and turned into an inspected job");
-    await sleep(500);
-    const leftovers = fs.readdirSync(downloads);
-    check(leftovers.length === 0, `Chrome saved nothing to the downloads folder (${leftovers.join(", ") || "empty"})`);
+    check(Boolean(caught), "a .zip download was caught and turned into an inspected job");
     await page.close();
 
-    // ---- 5. views the installed helper cannot produce yet (stubbed) -------------------------
+    // ---- 5. views the real runs don't reach (stubbed) -------------------------------------------
     await stubbedViews(browser);
   } catch (e) {
     await dumpFailure();
     throw e;
   } finally {
     await browser.close().catch(() => {});
+    for (const name of ["first.zip", "chosen.zip", "stopped.zip", "onepass.zip"]) fs.rmSync(path.join(DATA, name), { force: true });
   }
 }
 
@@ -563,7 +534,7 @@ async function clickButton(page, label) {
 const buttonLabels = (page) => page.$$eval("button", (bs) => bs.filter((b) => !b.hidden).map((b) => b.textContent.trim()));
 
 async function stubbedViews(browser) {
-  const session = (job, hostInfo = HOST_INFO_V1) => ({ jobs: { [job.id]: job }, current: job.id, hostInfo, hostError: null });
+  const session = (job, engineInfo = ENGINE_INFO) => ({ jobs: { [job.id]: job }, current: job.id, engineInfo, hostError: null });
 
   // A site that wants the user's login, none sent: the card offers that one site.
   const login = failedJob("needs_login", { error: { http_status: 401 } });
@@ -576,18 +547,23 @@ async function stubbedViews(browser) {
     `needs_login shows the login card: "${h1}"`,
   );
   await shot(p, "10-needs-login");
-  // Refusing Chrome's prompt: a calm note, and the background hears about it.
-  await p.evaluate(() => (chrome.permissions.request = async () => false));
+  // One click: the background remembers the site and runs the job again with the login.
   await clickButton(p, "Use my login on files.example.com");
-  await p.waitForFunction(() => /No problem/.test(document.body.innerText), { timeout: 5000 });
+  await p.waitForFunction(() => window.__sent.some((m) => m.cmd === "useLogin"), { timeout: 5000 }).catch(() => {});
   const sent = await p.evaluate(() => window.__sent.filter((m) => m.cmd !== "ping"));
-  check(
-    sent.some((m) => m.cmd === "awaitLogin") && sent.some((m) => m.cmd === "loginAnswer" && m.granted === false),
-    `refusing the site permission is calm and reported (${sent.map((m) => m.cmd).join(", ")})`,
-  );
+  check(sent.some((m) => m.cmd === "useLogin" && m.id === login.id), `the login card asks the background to use the login there (${sent.map((m) => m.cmd).join(", ")})`);
+  await p.close();
+  // The site access card: refusing Chrome's prompt gives a calm note, and the background hears it.
+  p = await openStubbedPopup(browser, { session: session(failedJob("site_access")) });
+  await p.waitForSelector(".hero h1");
+  await p.evaluate(() => (chrome.permissions.request = async () => false));
+  await clickButton(p, "Allow files.example.com");
+  await p.waitForFunction(() => /No problem/.test(document.body.innerText), { timeout: 5000 }).catch(() => {});
+  const refused = await p.evaluate(() => ({ text: document.body.innerText, sent: window.__sent.map((m) => m.cmd) }));
+  check(/No problem/.test(refused.text) && refused.sent.includes("awaitAccess") && refused.sent.includes("accessAnswer"), `refusing the site permission is calm and reported (${refused.sent.join(", ")})`);
   await p.close();
 
-  // Every error code gets its own words and actions; unknown codes get the helper's message.
+  // Every error code gets its own words and actions; unknown codes get the engine's message.
   const errorCases = [
     ["html_page", /web page, not the file/, ["Use my login on files.example.com", "Open link", "Download normally"]],
     ["link_expired", /link has expired/, ["Open the page"], { pageUrl: "https://files.example.com/downloads" }],
@@ -599,6 +575,10 @@ async function stubbedViews(browser) {
     ["folder_not_writable", /Can.t write to this folder/, ["Extract here"], { failedWhile: "extract" }],
     ["unsupported_entries", /can.t read these files/, ["Download normally"]],
     ["internal", /hit a bug/, ["Copy details", "Try again"]],
+    ["no_range", /only from the start/, ["Extract everything (one pass)", "Download normally"]],
+    ["inner_compressed", /can only be read in one pass/, ["Extract everything (one pass)"]],
+    ["password_needed", /password-protected/, ["Extract"], { failedWhile: "extract", lastExtract: { include: [] } }],
+    ["password_wrong", /doesn.t fit/, ["Extract"], { failedWhile: "extract", lastExtract: { include: [] } }],
     ["some_future_code", /Couldn.t extract this/, ["Download normally"]],
   ];
   const wrong = [];
@@ -627,7 +607,7 @@ async function stubbedViews(browser) {
     const copied = await p.evaluate(() => window.__copied);
     const feedback = await p.waitForFunction(() => [...document.querySelectorAll("button")].some((b) => b.textContent === "Copied"), { timeout: 3000 }).then(() => true, () => false);
     check(
-      /LinkUnzip extension \d/.test(copied) && /Helper: 0\.2\.0/.test(copied) && /Browser: /.test(copied) && /OS: /.test(copied) &&
+      /LinkUnzip extension \d/.test(copied) && /Engine: browser/.test(copied) && /Browser: /.test(copied) && /OS: /.test(copied) &&
         /Error: internal/.test(copied) && /Host: files\.example\.com/.test(copied) && !/secret|private/.test(copied) && feedback,
       `Copy details has the versions, code and host, no path or query, and says "Copied" (${copied.replaceAll("\n", " / ")})`,
     );
@@ -635,7 +615,7 @@ async function stubbedViews(browser) {
   }
   check(wrong.length === 0, `each error code has its own view and actions${wrong.length ? `: ${wrong.join("; ")}` : ` (${errorCases.length} codes)`}`);
 
-  // A URL in the helper's detail text is cut down to its host.
+  // A URL in the engine's detail text is cut down to its host.
   const leaky = failedJob("network", { error: { detail: "error sending request for url (https://files.example.com/private/data.zip?token=secret): timed out" } });
   p = await openStubbedPopup(browser, { session: session(leaky) });
   await p.waitForSelector(".hero h1");
@@ -645,32 +625,43 @@ async function stubbedViews(browser) {
   check(!/secret|private/.test(leakyText) && /files\.example\.com\/.../.test(leakyText), `links in the detail text keep only their host (${leakyText.split("\n").pop()})`);
   await p.close();
 
-  // Browse...: only with a helper that has pick_folder; the answer fills the field.
-  const ready = readyJob();
-  p = await openStubbedPopup(browser, {
-    session: session(ready, HOST_INFO_V2),
-    replies: { pickFolder: { ok: true, path: "D:\\Picked" } },
-  });
-  lastPopup = p;
-  await p.waitForSelector(".compare");
-  await clickButton(p, "Browse...");
-  await p.waitForFunction(() => document.querySelector('input[id^="folder-"]').value === "D:\\Picked", { timeout: 5000 });
-  const pick = await p.evaluate(() => window.__sent.find((m) => m.cmd === "pickFolder"));
-  check(
-    pick?.field === "output" && pick.jobId === "j-ready" && pick.start === ready.output,
-    `Browse... asks the helper for a folder and fills in the answer (${JSON.stringify(pick)})`,
-  );
-  await shot(p, "12-ready-browse");
-  await p.click("#settings-btn");
-  const baseBrowse = await p.$eval("#set-base-browse", (b) => !b.hidden);
-  check(baseBrowse, "the settings base folder has Browse... too");
+  // The password card: Extract sends the last extraction again with what was typed, and never
+  // stores it with the job or the drafts.
+  const locked = failedJob("password_wrong", { failedWhile: "extract", target: { key: "downloads", sub: "data" }, output: "Downloads > data", lastExtract: { id: "j-password_wrong", include: [], connections: 4 } });
+  p = await openStubbedPopup(browser, { session: session(locked) });
+  await p.waitForSelector(".password-row input");
+  await p.type(".password-row input", "s3cret pw");
+  await p.keyboard.press("Enter");
+  await p.waitForFunction(() => window.__sent.some((m) => m.cmd === "extract"), { timeout: 5000 }).catch(() => {});
+  const withPw = await p.evaluate(() => window.__sent.find((m) => m.cmd === "extract"));
+  await shot(p, "12-error-password");
   await p.close();
+  check(withPw?.password === "s3cret pw" && withPw.id === "j-password_wrong", "password card: Enter extracts again with the typed password");
 
-  // Reopened by the background after picking the base folder: the settings are open again.
-  p = await openStubbedPopup(browser, { session: { ...session(ready, HOST_INFO_V2), reopen: "settings" } });
-  await p.waitForSelector(".compare");
-  check(await p.$eval("#settings", (s) => !s.hidden), "the popup reopens on the settings after a base folder was picked");
+  // A ready zip with protected files asks for the password next to Start; a zip inside a zip
+  // shows where it came from and the way back.
+  const lockedReady = { ...readyJob({ encrypted: 24, encryption: ["aes"] }), target: { key: "downloads", sub: "big" }, output: "Downloads > big" };
+  p = await openStubbedPopup(browser, { session: session(lockedReady) });
+  await p.waitForSelector(".password-row");
+  const ask = await text(p, ".password-row label");
+  await p.type(".password-row input", "pw-typed");
+  await p.click("#extract-btn");
+  await p.waitForFunction(() => window.__sent.some((m) => m.cmd === "extract"), { timeout: 5000 }).catch(() => {});
+  const sentReady = await p.evaluate(() => window.__sent.find((m) => m.cmd === "extract"));
+  const drafts = await p.evaluate(() => chrome.storage.session.get("drafts").then((d) => JSON.stringify(d)));
+  await shot(p, "12b-ready-password");
   await p.close();
+  check(/password-protected/.test(ask) && sentReady?.password === "pw-typed" && !drafts.includes("pw-typed"), `ready: "${ask}", Start sends the password, the drafts don't keep it`);
+  const inner = { ...readyJob(), id: "j-inner", name: "shard-001.zip", outerName: "dataset.zip", parentId: "j-outer", inner: ["shards/shard-001.zip"] };
+  p = await openStubbedPopup(browser, { session: { ...session(inner), jobs: { "j-inner": inner, "j-outer": { ...readyJob(), id: "j-outer", name: "dataset.zip" } } } });
+  await p.waitForSelector("#job-line .name");
+  const line = await text(p, "#job-line .name");
+  await p.click('#job-line button[aria-label^="Back"]');
+  const back = await p.evaluate(() => window.__sent.find((m) => m.cmd === "back"));
+  const noFallback = !(await buttonLabels(p)).includes("Download Normal ZIP (Fallback)");
+  await shot(p, "12c-inner-zip");
+  await p.close();
+  check(/dataset\.zip › shard-001\.zip/.test(line) && back?.id === "j-inner" && noFallback, `a zip inside a zip: "${line}", Back goes to the outer one, no normal download of it`);
 
   await chooseFiles(browser, session);
   await noneInOnlyFolder(browser, session);
@@ -684,16 +675,20 @@ async function stubbedViews(browser) {
     phase: "cancelled",
     result: { type: "cancelled", output: lastExtract.output, files_done: 7, extracted_bytes: 123456 },
     lastExtract: { id: "j-stopped", ...lastExtract },
+    // Into Downloads: Resume starts right in the toolbar popup (a folder hands over to the window).
+    target: { key: "downloads", sub: "big" },
+    output: "Downloads > big",
   };
-  p = await openStubbedPopup(browser, { session: session(stopped, HOST_INFO_V2) });
+  p = await openStubbedPopup(browser, { session: session(stopped) });
   await p.waitForSelector(".hero h1");
   const stoppedPrimary = await text(p, "button.btn.primary");
   await clickButton(p, "Resume");
-  const resumeSent = await p.evaluate(() => window.__sent.find((m) => m.cmd === "resume"));
+  await p.waitForFunction(() => window.__sent.some((m) => m.cmd === "extract"), { timeout: 5000 }).catch(() => {});
+  const resumeSent = await p.evaluate(() => window.__sent.find((m) => m.cmd === "extract" && m.resume));
   await shot(p, "16-stopped-resume");
   await p.close();
   const broken = failedJob("network", { failedWhile: "extract", lastExtract: { id: "j-network", ...lastExtract } });
-  p = await openStubbedPopup(browser, { session: session(broken, HOST_INFO_V2) });
+  p = await openStubbedPopup(browser, { session: session(broken) });
   await p.waitForSelector(".hero h1");
   const brokenLabels = await buttonLabels(p);
   const brokenPrimary = await text(p, "button.btn.primary");
@@ -715,7 +710,7 @@ async function stubbedViews(browser) {
       renamed: 0, stream: false, verified_files: 24, skipped_existing: 3, skipped_bytes: 120 * MB, index_bytes: 12.5 * MB,
     },
   };
-  p = await openStubbedPopup(browser, { session: session(finished, HOST_INFO_V2) });
+  p = await openStubbedPopup(browser, { session: session(finished) });
   await p.waitForSelector(".zero-line");
   const doneText = await p.evaluate(() => document.getElementById("view").innerText);
   check(
@@ -748,7 +743,7 @@ async function stubbedViews(browser) {
   // The rating line itself: "No thanks" and "Rate it" both remove it and tell the background.
   const answers = {};
   for (const label of ["No thanks", "Rate it"]) {
-    p = await openStubbedPopup(browser, { session: session({ ...finished, askRate: true }, HOST_INFO_V2) });
+    p = await openStubbedPopup(browser, { session: session({ ...finished, askRate: true }) });
     await p.waitForSelector(".rate");
     if (label === "No thanks") await shot(p, "17b-done-rate");
     await clickButton(p, label);
@@ -759,7 +754,7 @@ async function stubbedViews(browser) {
     await p.close();
   }
   // In real use the Done view is already on screen when the background decides to ask.
-  p = await openStubbedPopup(browser, { session: session(finished, HOST_INFO_V2) });
+  p = await openStubbedPopup(browser, { session: session(finished) });
   await p.waitForSelector(".zero-line");
   await p.evaluate((job) => window.__emit({ jobs: { newValue: { [job.id]: job } } }), { ...finished, askRate: true });
   const lateRate = await p.waitForSelector(".rate", { timeout: 2000 }).then(() => true, () => false);
@@ -771,29 +766,14 @@ async function stubbedViews(browser) {
     "the rating line goes away on either answer; only Rate it opens the store",
   );
 
-  // A protocol-1 helper: no Browse... anywhere, the update card instead ("Later" puts it away).
-  p = await openStubbedPopup(browser, { session: session(failedJob("no_range"), HOST_INFO_V1) });
-  await p.waitForSelector(".hero h1");
-  const v1Browse = await p.$$eval("button.browse", (bs) => bs.filter((b) => !b.hidden).length);
-  check(v1Browse === 0 && (await p.$('input[id^="folder-"]')), "no Browse... with a protocol-1 helper (folder field still there)");
-  const v1Card = Boolean(await p.$(".card.update"));
-  await shot(p, "18-update-card");
-  await clickButton(p, "Later");
-  const gone = !(await p.$(".card.update"));
-  await p.evaluate(() => chrome.storage.session.remove("updateLater"));
+  // Files with another password, and a zip whose index lists files differently (one pass).
+  const notes = { ...finished, id: "j-notes", result: { ...finished.result, other_password: 2, other_password_sample: ["a/x.txt", "b/y.txt"], listing_differs: 1, listing_differs_sample: ["readme.txt"], stream: true, requests: 1 } };
+  p = await openStubbedPopup(browser, { session: session(notes) });
+  await p.waitForSelector(".zero-line");
+  const notesText = await p.evaluate(() => document.getElementById("view").innerText);
+  await shot(p, "17c-done-notes");
   await p.close();
-  p = await openStubbedPopup(browser, { session: { ...session(failedJob("no_range"), HOST_INFO_V1), updateLater: true } });
-  await p.waitForSelector(".hero h1");
-  const stillLater = !(await p.$(".card.update"));
-  await p.close();
-  p = await openStubbedPopup(browser, { session: session(failedJob("no_range"), HOST_INFO_V2) });
-  await p.waitForSelector(".hero h1");
-  const v2Card = Boolean(await p.$(".card.update"));
-  await p.close();
-  check(
-    v1Card && gone && stillLater && !v2Card,
-    `the update card shows for a protocol-1 helper only, and Later puts it away for the session (${[v1Card, gone, stillLater, !v2Card]})`,
-  );
+  check(/2 files in this zip have another password/.test(notesText) && /x\.txt, y\.txt/.test(notesText) && /lists 1 file differently/.test(notesText) && /in 1 pass/.test(notesText), "the done view lists files with another password and files the index lists differently");
 
   await themeSwitch(browser, session);
   await themes(browser, session);
@@ -801,7 +781,7 @@ async function stubbedViews(browser) {
 
 /** Light / dark: the header button picks the other one, Settings can go back to following Windows. */
 async function themeSwitch(browser, session) {
-  const p = await openStubbedPopup(browser, { session: { jobs: {}, current: null, hostInfo: HOST_INFO_V2, hostError: null }, scheme: "light" });
+  const p = await openStubbedPopup(browser, { session: { jobs: {}, current: null, engineInfo: ENGINE_INFO, hostError: null }, scheme: "light" });
   await p.waitForSelector("#view > *");
   const state = () =>
     p.evaluate(async () => ({
@@ -846,13 +826,13 @@ const waitFor = (page, fn, arg) =>
 const waitTotals = (page, prefix) => waitFor(page, (p) => (document.querySelector(".fl-totals")?.textContent || "").startsWith(p), prefix);
 const waitCrumbs = (page, last) => waitFor(page, (l) => [...document.querySelectorAll(".fl-crumbs > *")].pop()?.textContent === l, last);
 
-/** Choose files: browse, tick, the selection the helper gets, keyboard, paging, search. */
+/** Choose files: browse, tick, the selection the engine gets, keyboard, paging, search. */
 async function chooseFiles(browser, session) {
   const sizes = ARCHIVE.map(([, a, b]) => (b === undefined ? a : a * b));
   const extracted = sizes.reduce((x, y) => x + y, 0);
   // Into Downloads (the default), so Extract starts right in the toolbar popup.
   const job = { ...readyJob({ files: 118296, dirs: 5, extracted, compressed: Math.round(extracted * 0.9) }), target: { key: "downloads", sub: "big" }, output: "Downloads > big" };
-  const p = await openStubbedPopup(browser, { session: session(job, HOST_INFO_V2), archive: ARCHIVE });
+  const p = await openStubbedPopup(browser, { session: session(job), archive: ARCHIVE });
   lastPopup = p;
   await p.waitForSelector(".fl-row");
   const root = await rowNames(p);
@@ -918,7 +898,7 @@ async function chooseFiles(browser, session) {
   const windowRows = await p.$$eval(".fl-row", (r) => r.length);
   const countText = await flText(p, ".fl-count");
   await shot(p, "14-choose-big-folder");
-  // Again, now that the fake helper has its sorted listing: this is the popup's own time.
+  // Again, now that the fake engine has its sorted listing: this is the popup's own time.
   await p.evaluate(() => document.querySelector(".fl-crumbs button").click());
   await waitCrumbs(p, "All files");
   const t1 = Date.now();
@@ -974,7 +954,7 @@ async function noneInOnlyFolder(browser, session) {
   const spec = [["train2017/", 6000, 160000]];
   const extracted = 6000 * 160000;
   const job = readyJob({ files: 6000, dirs: 1, extracted, compressed: Math.round(extracted * 0.9) });
-  const p = await openStubbedPopup(browser, { session: session(job, HOST_INFO_V2), archive: spec });
+  const p = await openStubbedPopup(browser, { session: session(job), archive: spec });
   lastPopup = p;
   await p.waitForSelector(".fl-row");
   await openFolderRow(p, "train2017/");
@@ -1001,7 +981,7 @@ async function noneInOnlyFolder(browser, session) {
 async function searchChips(browser, session) {
   const spec = [["photos/", 300, 1000], ["notes/a.txt", 10], ["notes/b.txt", 10], ["readme.md", 5]];
   const job = readyJob({ files: 303, dirs: 2, extracted: 300025, compressed: 270000, extensions: [{ ext: "jpg", files: 300 }, { ext: "txt", files: 2 }, { ext: "md", files: 1 }] });
-  const p = await openStubbedPopup(browser, { session: session(job, HOST_INFO_V2), archive: spec });
+  const p = await openStubbedPopup(browser, { session: session(job), archive: spec });
   lastPopup = p;
   await p.waitForSelector(".fl-chips");
   const chips = await p.$$eval(".chip-btn", (b) => b.map((x) => x.textContent));
@@ -1095,21 +1075,23 @@ async function themes(browser, session) {
   };
   const ready = readyJob({ files: 118296, dirs: 5 });
   const views = [
-    ["pick", { jobs: {}, current: null, hostInfo: HOST_INFO_V1, hostError: null }],
-    ["settings", { jobs: {}, current: null, hostInfo: HOST_INFO_V2, hostError: null }, (p) => p.click("#settings-btn")],
-    ["inspecting", session({ ...readyJob(), phase: "inspecting", report: null }, HOST_INFO_V2)],
-    ["ready", { ...session(ready, HOST_INFO_V2), drafts: { [ready.id]: { listOpen: true } } }, (p) => p.waitForSelector(".fl-row")],
-    ["ready-long-name", session({ ...readyJob({ unsupported: 2, unsupported_sample: [{ name: longName, reason: "encrypted" }] }), name: longName, output: `D:\\${longName}\\${longName}` }, HOST_INFO_V1)],
-    ["ready-pattern", { ...session(ready, HOST_INFO_V2), drafts: { [ready.id]: { include: "*.dll" } } }, (p) => p.waitForSelector(".fl-row")],
-    ["extracting", session({ ...readyJob(), phase: "extracting", progress }, HOST_INFO_V2)],
+    ["pick", { jobs: {}, current: null, engineInfo: ENGINE_INFO, hostError: null }],
+    ["settings", { jobs: {}, current: null, engineInfo: ENGINE_INFO, hostError: null }, (p) => p.click("#settings-btn")],
+    ["inspecting", session({ ...readyJob(), phase: "inspecting", report: null })],
+    ["ready", { ...session(ready), drafts: { [ready.id]: { listOpen: true } } }, (p) => p.waitForSelector(".fl-row")],
+    ["ready-long-name", session({ ...readyJob({ unsupported: 2, unsupported_sample: [{ name: longName, reason: "encrypted" }] }), name: longName, output: `D:\\${longName}\\${longName}` })],
+    ["ready-pattern", { ...session(ready), drafts: { [ready.id]: { include: "*.dll" } } }, (p) => p.waitForSelector(".fl-row")],
+    ["extracting", session({ ...readyJob(), phase: "extracting", progress })],
     // Resumed: 12 files were already there, so the bar starts past them, not at 0 %.
-    ["extracting-resumed", session({ ...readyJob(), phase: "extracting", progress: { ...progress, downloaded: 0.2 * GB, total_compressed: 0.48 * GB, files_done: 3, total_files: 12, skipped_files: 12, skipped_compressed: 0.4 * GB, skipped_extracted: 0.55 * GB } }, HOST_INFO_V2)],
-    ["done", session({ ...readyJob(), phase: "done", lastExtract: {}, result: { type: "done", output: "C:\\Users\\me\\Downloads\\LinkUnzip\\big", files: 24, dirs: 3, extracted_bytes: 1.2 * GB, downloaded_bytes: 0.7 * GB, archive_size: 0.9 * GB, normal_needs: 2.1 * GB, elapsed_ms: 42000, retries: 1, requests: 31, zip_bytes_on_disk: 0, renamed: 2, stream: false, verified_files: 24, skipped_existing: 3, skipped_bytes: 0.1 * GB, index_bytes: 12.5 * 1024 ** 2 } }, HOST_INFO_V2)],
-    ["done-rate", session({ ...readyJob(), phase: "done", askRate: true, lastExtract: {}, result: { type: "done", output: "C:\\Users\\me\\Downloads\\LinkUnzip\\big", files: 24, dirs: 3, extracted_bytes: 1.2 * GB, downloaded_bytes: 0.7 * GB, archive_size: 0.9 * GB, normal_needs: 2.1 * GB, elapsed_ms: 42000, retries: 0, requests: 31, zip_bytes_on_disk: 0, renamed: 0, stream: false, verified_files: 24, skipped_existing: 0, skipped_bytes: 0, index_bytes: 1024 ** 2 } }, HOST_INFO_V2)],
-    ["stopped", session({ ...readyJob(), phase: "cancelled", lastExtract: {}, result: { output: "C:\\x", files_done: 7 } }, HOST_INFO_V2)],
-    ["error-login", session(failedJob("needs_login"), HOST_INFO_V1)],
-    ["error-no-range", session(failedJob("no_range"), HOST_INFO_V2)],
-    ["error-disk-full", session(failedJob("disk_full", { failedWhile: "extract", lastExtract: {}, error: { message: "LinkUnzip needs 2.1 GB on C: but only 1.2 GB is free." } }), HOST_INFO_V2)],
+    ["extracting-resumed", session({ ...readyJob(), phase: "extracting", progress: { ...progress, downloaded: 0.2 * GB, total_compressed: 0.48 * GB, files_done: 3, total_files: 12, skipped_files: 12, skipped_compressed: 0.4 * GB, skipped_extracted: 0.55 * GB } })],
+    ["done", session({ ...readyJob(), phase: "done", lastExtract: {}, result: { type: "done", output: "C:\\Users\\me\\Downloads\\LinkUnzip\\big", files: 24, dirs: 3, extracted_bytes: 1.2 * GB, downloaded_bytes: 0.7 * GB, archive_size: 0.9 * GB, normal_needs: 2.1 * GB, elapsed_ms: 42000, retries: 1, requests: 31, zip_bytes_on_disk: 0, renamed: 2, stream: false, verified_files: 24, skipped_existing: 3, skipped_bytes: 0.1 * GB, index_bytes: 12.5 * 1024 ** 2 } })],
+    ["done-rate", session({ ...readyJob(), phase: "done", askRate: true, lastExtract: {}, result: { type: "done", output: "C:\\Users\\me\\Downloads\\LinkUnzip\\big", files: 24, dirs: 3, extracted_bytes: 1.2 * GB, downloaded_bytes: 0.7 * GB, archive_size: 0.9 * GB, normal_needs: 2.1 * GB, elapsed_ms: 42000, retries: 0, requests: 31, zip_bytes_on_disk: 0, renamed: 0, stream: false, verified_files: 24, skipped_existing: 0, skipped_bytes: 0, index_bytes: 1024 ** 2 } })],
+    ["stopped", session({ ...readyJob(), phase: "cancelled", lastExtract: {}, result: { output: "C:\\x", files_done: 7 } })],
+    ["error-login", session(failedJob("needs_login"))],
+    ["error-no-range", session(failedJob("no_range"))],
+    ["error-disk-full", session(failedJob("disk_full", { failedWhile: "extract", lastExtract: {}, error: { message: "LinkUnzip needs 2.1 GB on C: but only 1.2 GB is free." } }))],
+    ["error-password", session(failedJob("password_needed", { failedWhile: "extract", lastExtract: {} }))],
+    ["ready-password", session({ ...readyJob({ encrypted: 24, encryption: ["zipcrypto"] }), target: { key: "downloads", sub: "big" }, output: "Downloads > big" })],
   ];
   const bad = [];
   let count = 0;
@@ -1146,18 +1128,16 @@ async function themes(browser, session) {
       count += 1;
       await p.close();
     }
-    for (const mode of ["", "?update=1"]) {
-      const w = await browser.newPage();
-      await w.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
-      await w.setViewport({ width: 900, height: 900 });
-      await w.goto(`chrome-extension://${EXT_ID}/welcome.html${mode}`);
-      await w.waitForSelector('#step-helper:not([data-state="checking"])', { timeout: 15000 });
-      const low = await contrastProblems(w);
-      if (low.length) bad.push(`welcome${mode}/${scheme}: ${low.join(", ")}`);
-      await w.screenshot({ path: path.join(dir, `welcome${mode ? "-update" : ""}-${scheme}.png`), fullPage: true });
-      count += 1;
-      await w.close();
-    }
+    const w = await browser.newPage();
+    await w.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
+    await w.setViewport({ width: 900, height: 900 });
+    await w.goto(`chrome-extension://${EXT_ID}/welcome.html`);
+    await w.waitForFunction(() => document.getElementById("folder-status").textContent !== "", { timeout: 15000 });
+    const low = await contrastProblems(w);
+    if (low.length) bad.push(`welcome/${scheme}: ${low.join(", ")}`);
+    await w.screenshot({ path: path.join(dir, `welcome-${scheme}.png`), fullPage: true });
+    count += 1;
+    await w.close();
   }
   check(bad.length === 0, `${count} views in light and dark: no sideways scrolling at 400 px, text contrast AA${bad.length ? `: ${bad.join("; ")}` : ""} (screenshots in ${dir})`);
 }

@@ -7,7 +7,7 @@
 
 import { heldBackType } from "./dl-sink.js";
 import { globToRegExp, listPath, nearestMark } from "./plan.js";
-import { isDir, unsupportedShort } from "./zip.js";
+import { isDir, needsPassword, unsupportedShort } from "./zip.js";
 
 export const MAX_LIMIT = 2000;
 /** Keep a reply well under the 64 MB a message may carry, even with absurdly long names. */
@@ -299,7 +299,7 @@ export class Tree {
   fileItem(i) {
     const e = this.entries[i];
     const path = listPath(e.name);
-    return { name: fileName(path), path, dir: false, size: e.usize, compressed: e.csize, unsupported: unsupportedShort(e) };
+    return { name: fileName(path), path, dir: false, size: e.usize, compressed: e.csize, unsupported: unsupportedShort(e), locked: needsPassword(e) };
   }
 }
 

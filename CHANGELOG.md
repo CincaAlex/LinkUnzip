@@ -5,7 +5,71 @@ and versions follow [Semantic Versioning](https://semver.org/). The helper (`lin
 the extension share one version number; an update to the extension alone skips the helper, which
 keeps its older version until the next full release.
 
-## 1.1.1 - Unreleased (extension only)
+## Unreleased
+
+## 1.2.0 - 2026-11-05
+
+Also contains everything under 1.1.1 below, which was not released on its own. The helper
+(`linkunzip.exe`, the command line) gets If-Range, the archive-swap tests, the file
+list's ticks and the top-folder rule for the extension's new switch; the rest is the extension.
+
+### Added
+- **Password-protected zips**: ZipCrypto and WinZip AES (128, 192 and 256 bit), as made by Windows,
+  7-Zip, WinZip and libarchive. The popup asks for the password before Start and checks it on the
+  first protected file before anything is written. Files with another password are left out and
+  listed. The password stays in memory while LinkUnzip works on the zip; it is never saved.
+- **GitHub's "Download ZIP" without the helper**: servers that can only send a zip from start to
+  end are read in one pass, in the browser (no file list or size first). At the end the zip's own
+  index is compared with what came, and files it lists differently are reported.
+- **Zips inside zips**: a zip in the file list has an Open button that shows its own file list,
+  read through the outer zip with range requests. A compressed inner zip is extracted in one pass.
+  Up to 4 levels.
+- **Video, audio and PDF previews of any size**, streamed straight from the zip instead of held in
+  memory (the 200 MB limit is gone). A stored video can be seeked: only the part you jump to is
+  downloaded. Compressed ones play from their start.
+- **Settings > Extract with the Windows helper** (shown when the helper is installed, off by
+  default): you choose whether the helper extracts. Before, it was used on its own for servers
+  without Range support, so which program extracted a zip depended on the server. Turned on, the
+  helper saves into `<Windows Downloads>\<zip name>` (faster for zips with thousands of files),
+  and Open folder opens it in Explorer. Password zips, zips inside zips and links that need your
+  login stay in the browser. Before Start the popup says which one extracts the zip, and why when
+  it's the browser. The index, the file list and the preview always come from the browser. Only
+  the link and the ticked files go to the helper (no cookies, no page address). It needs this
+  version's helper (features `marks` and `drop_top`); with an older one the popup says so.
+- The helper takes the file list's ticks as they are (`select.marks`, nearest mark wins, as in
+  the browser) and `drop_top` (the zip's own top folder left out, as below).
+
+### Changed
+- Range requests name the version of the file they want (`If-Range`, with a strong ETag or
+  Last-Modified), so a server whose file changed sends the new file instead of a part of it and the
+  job stops. A server that answers a part to every If-Range (GitHub's and Hugging Face's CDNs do)
+  is still checked after each answer, as before.
+- **Open folder** in Downloads mode opens Downloads/<zip name> (Chrome's download list keeps one
+  entry per job for it, removed when the job is closed), not Downloads itself.
+- **No folder inside a folder of the same name**: when everything in blender-4.2.zip sits in
+  blender-4.2/, its contents go straight into Downloads/blender-4.2, not
+  Downloads/blender-4.2/blender-4.2 (also into a folder you chose, and in one-pass mode, so
+  GitHub's "Download ZIP" too). A zip with anything outside that folder, or a folder of another
+  name, is extracted as it is. Resuming an extraction started by an earlier version keeps its
+  layout.
+- The cookies permission is gone: nothing needs it now that the one-pass mode runs in the browser.
+- The `downloads.open` permission is gone too: nothing has used it since 1.1.0.
+- A response that fails its checks is no longer downloaded to its end in the background.
+
+### Tests
+- Archive-swap tests, for the extension's engine (`tools/engine_test.mjs`) and the helper
+  (`tests/swap.rs`): the file replaced by another version of the same length after the index was
+  read, and across a retried file, with strong, weak, Last-Modified and no validators, and servers
+  that honour, ignore or always refuse If-Range. Each stops, and only the first version's files
+  keep their names.
+- The popup end-to-end test runs on the browser engine (no helper), with real extractions into
+  Downloads, Stop and Resume, one pass and the new cards.
+- The top folder rule in the engine tests (Downloads, a chosen folder, one pass, Resume of an
+  earlier version's layout) and the helper's (`tests/top_folder.rs`), and `tools/e2e/helper.mjs`:
+  the Settings switch in real Chrome with the helper just built, connected through a local bridge
+  so the helper installed on the PC is left alone.
+
+## 1.1.1 - not released (its changes came out in 1.2.0)
 
 ### Added
 - **Search by type**: chips with the zip's most common file types (`*.jpg`, `*.json`), patterns

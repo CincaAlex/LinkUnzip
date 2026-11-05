@@ -2,19 +2,25 @@
 // the background where the file sits, fetches just that file's bytes and inflates them here.
 // Nothing is written to disk; the bytes are let go when you move on or close the tab.
 //
+// Video, audio and PDFs are streamed instead: the background worker serves them at an address of
+// its own, straight from the zip (preview.js), so they have no size limit and a stored video can
+// be seeked without downloading what comes before.
+//
 // Everything in the file is untrusted. Text goes in as text, images through <img> (an SVG there
 // can't run scripts), PDFs through Chrome's own viewer, and HTML is shown as source, never run.
 
 import { h } from "./dom.js";
 import { crc32 } from "./engine/crc32.js";
-import { entryChunks, seekToData } from "./engine/entry.js";
+import { checksCrc } from "./engine/crypto.js";
+import { checkPassword, decryptorFor, entryChunks, seekToData } from "./engine/entry.js";
 import { ByteReader, Source } from "./engine/source.js";
 import { humanBytes } from "./fmt.js";
 
 const TEXT_FIRST = 256 * 1024; // shown at first; Load more adds TEXT_MORE
 const TEXT_MORE = 1024 * 1024;
 const CSV_ROWS = 1000;
-const LIMITS = { image: 50 << 20, pdf: 200 << 20, audio: 200 << 20, video: 200 << 20 };
+const LIMITS = { image: 50 << 20 };
+const STREAMED = new Set(["pdf", "audio", "video"]);
 
 const KINDS = {
   image: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"],
@@ -60,6 +66,8 @@ function release() {
   if (!current) return;
   current.ctl.abort();
   if (current.url) URL.revokeObjectURL(current.url);
+  clearInterval(current.timer);
+  if (current.token) send("previewDone", { token: current.token });
   current = null;
 }
 addEventListener("pagehide", release);
@@ -80,7 +88,7 @@ async function open(info, ctl, stats) {
   const resp = await src.openRange(e.offset, e.regionEnd - 1, ctl.signal);
   const reader = new ByteReader(resp.body, e.offset, (n) => (stats.downloaded += n));
   await seekToData(reader, e);
-  return { gen: entryChunks(reader, e), reader };
+  return { gen: entryChunks(reader, e, () => {}, 0, await decryptorFor(reader, e, info.password)), reader };
 }
 
 function downloadedLine(stats, info, extra = "") {
@@ -99,7 +107,7 @@ async function readAll(info, ctl, stats) {
     n += copy.length;
     if (n > info.entry.usize) throw new Error("the data expands beyond its declared size");
   }
-  if (n !== info.entry.usize || crc !== info.entry.crc) throw new Error("the file's CRC-32 check failed: the data is corrupt");
+  if (n !== info.entry.usize || (checksCrc(info.entry) && crc !== info.entry.crc)) throw new Error("the file's CRC-32 check failed: the data is corrupt");
   return parts;
 }
 
@@ -265,17 +273,63 @@ async function showBlob(info, ctl, stats, kind) {
   const blob = new Blob(parts, { type: MIME[extOf(path)] || "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   current.url = url;
-  const name = path.slice(path.lastIndexOf("/") + 1);
-  let el;
-  if (kind === "image") el = h("img", { class: "image", src: url, alt: name });
-  else if (kind === "pdf") {
-    view.className = "";
-    el = h("iframe", { class: "pdf", src: url, title: name });
-  } else if (kind === "audio") el = h("audio", { src: url, controls: true });
-  else el = h("video", { src: url, controls: true });
-  view.replaceChildren(el);
+  view.replaceChildren(h("img", { class: "image", src: url, alt: path.slice(path.lastIndexOf("/") + 1) }));
   setStats(`Whole file, CRC-32 checked · ${downloadedLine(stats, info)}`);
   return true;
+}
+
+/**
+ * Video, audio and PDFs: played from an address the background worker answers straight from the
+ * zip, so nothing is held here and any size works. A stored file can be seeked (only the part
+ * the player asks for is downloaded); a compressed one plays from its start.
+ */
+async function showStreamed(info, kind) {
+  const r = await send("previewStream", { source: info.source, entry: info.entry, mime: MIME[extOf(path)] || "application/octet-stream", password: info.password });
+  if (!r?.ok) throw new Error(r?.error || "the preview couldn't start");
+  const mine = current;
+  mine.token = r.token;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  let el;
+  if (kind === "pdf") {
+    view.className = "";
+    el = h("iframe", { class: "pdf", src: r.url, title: name });
+  } else {
+    el = h(kind, { src: r.url, controls: true, preload: "metadata" });
+    el.addEventListener("error", () => {
+      if (current !== mine) return;
+      card("Can't play this file here", h("p", { class: "muted" }, "Chrome can't play this format, or the data didn't come through right (it is checked as it plays). Extract it to open it in another player."));
+    });
+  }
+  view.replaceChildren(el);
+  const seekable = info.entry.method === 0 && !info.encrypted;
+  const how = seekable ? "seeking downloads only the part it needs" : "compressed in the zip, so it plays from its start";
+  const update = async () => {
+    const s = await send("previewStats", { token: r.token });
+    if (current === mine) setStats(`Streamed from the zip, ${how} · ${humanBytes(s?.downloaded || 0)} downloaded of a ${humanBytes(info.source.size)} zip`);
+  };
+  mine.timer = setInterval(update, 1000);
+  update();
+  return true;
+}
+
+/** An encrypted file and no password yet for this zip: ask, and keep it for the zip. */
+function askPassword(info, wrong) {
+  return new Promise((resolve) => {
+    const input = h("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": "Password" });
+    const go = async () => {
+      if (!input.value) return input.focus();
+      await send("setPassword", { id: jobId, password: input.value });
+      resolve(input.value);
+    };
+    input.addEventListener("keydown", (e) => e.key === "Enter" && go());
+    card(
+      wrong ? "That password doesn't fit" : "This file is password-protected",
+      h("p", { class: "muted" }, "Type the zip's password to see it. LinkUnzip keeps it only while the zip is open, never saved."),
+      h("p", { class: "row" }, input, h("button", { class: "btn primary", type: "button", onclick: go }, "Show")),
+    );
+    setStats("");
+    input.focus();
+  });
 }
 
 function showDetails(info, why) {
@@ -324,10 +378,17 @@ async function show(force = false) {
   $("where").textContent = `${r.name} · ${parentOf(path) || "top folder"}`;
   updateNav();
   if (r.unsupported) return showDetails(r, `LinkUnzip can't read this file (${r.unsupported})`);
+  if (r.encrypted && !r.password) {
+    r.password = await askPassword(r, false);
+    if (current?.ctl !== ctl) return;
+  }
   const stats = { downloaded: 0 };
   const kind = kindOf(path);
   try {
-    if (kind === "image" || kind === "pdf" || kind === "audio" || kind === "video") return await showBlob(r, ctl, stats, kind);
+    // The password is checked on this file's own header first (a streamed one fails quietly).
+    if (r.encrypted) await checkPassword(Source.from(r.source, ctl.signal), r.entry, r.password);
+    if (STREAMED.has(kind)) return await showStreamed(r, kind);
+    if (kind === "image") return await showBlob(r, ctl, stats, kind);
     if (kind === "csv") return await showText(r, ctl, stats, { csv: true });
     if (kind === "text") {
       if (!(await showText(r, ctl, stats))) showDetails(r, "This file isn't text");
@@ -338,6 +399,11 @@ async function show(force = false) {
     if (!(await showText(r, ctl, stats, { sniffOnly: true }))) showDetails(r, `No preview for .${extOf(path)} files`);
   } catch (e) {
     if (ctl.signal.aborted) return;
+    if (e?.code === "password_wrong") {
+      await askPassword(r, true);
+      if (current?.ctl === ctl) show(force);
+      return;
+    }
     card("Couldn't load this file", h("p", { class: "bad" }, e?.message || String(e)));
   }
 }

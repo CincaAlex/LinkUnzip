@@ -3,6 +3,7 @@
 // src/zip/{eocd,central,index}.rs.
 
 import { Coded, failed } from "./errors.js";
+import { encryptionOf, parseAesExtra, realMethod } from "./crypto.js";
 
 export const METHOD_STORED = 0;
 export const METHOD_DEFLATE = 8;
@@ -49,19 +50,24 @@ const METHOD_NAMES = {
 export const isDir = (e) => e.name.endsWith("/") || e.name.endsWith("\\");
 export const isEncrypted = (e) => (e.flags & (FLAG_ENCRYPTED | FLAG_STRONG_ENCRYPTION)) !== 0;
 
+/** Encrypted in a way LinkUnzip reads with the password (ZipCrypto or WinZip AES). */
+export const needsPassword = (e) => isEncrypted(e) && encryptionOf(e) != null;
+
 /** Why LinkUnzip can't extract this entry, or null when it can. Directories never matter. */
 export function unsupportedReason(e) {
   if (isDir(e)) return null;
-  if (isEncrypted(e)) return "encrypted";
-  if (e.method === METHOD_STORED || e.method === METHOD_DEFLATE) return null;
-  return `compression method ${e.method} (${METHOD_NAMES[e.method] || "unknown"})`;
+  if (isEncrypted(e) && !encryptionOf(e)) return "encrypted (a kind LinkUnzip can't read)";
+  const m = realMethod(e);
+  if (m === METHOD_STORED || m === METHOD_DEFLATE) return null;
+  return `compression method ${m} (${METHOD_NAMES[m] || "unknown"})`;
 }
 
 /** The short form the file list shows: "encrypted", "method 12", or null. */
 export function unsupportedShort(e) {
-  if (isEncrypted(e)) return "encrypted";
-  if (e.method === METHOD_STORED || e.method === METHOD_DEFLATE) return null;
-  return `method ${e.method}`;
+  if (isEncrypted(e) && !encryptionOf(e)) return "encrypted";
+  const m = realMethod(e);
+  if (m === METHOD_STORED || m === METHOD_DEFLATE) return null;
+  return `method ${m}`;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -202,6 +208,7 @@ export function parseCentralDirectory(buf, count) {
     };
     const needs = { usize: uncomp32 === 0xffffffff, csize: comp32 === 0xffffffff, offset: offset32 === 0xffffffff };
     if (needs.usize || needs.csize || needs.offset) applyZip64(entry, buf, dv, nameStart + nameLen, extraLen, needs);
+    if (method === 99) entry.aes = parseAesExtra(buf.subarray(nameStart + nameLen, nameStart + nameLen + extraLen));
     entries.push(entry);
     pos += total;
   }

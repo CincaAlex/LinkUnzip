@@ -35,7 +35,7 @@ fn compressed(fx: &Fixture, names: &[&str]) -> u64 {
 
 /// The data requests of a Range-mode run (after the probe and the tail of the "small" fixture).
 fn data_requests(server: &TestServer) -> Vec<RequestLog> {
-    server.requests().into_iter().skip(2).collect()
+    server.requests().into_iter().skip(3).collect() // after probe, If-Range check and tail
 }
 
 /// Damage the extracted tree the ways an interrupted or meddled-with folder can look.
@@ -134,7 +134,11 @@ fn a_folder_that_is_complete_costs_only_the_index() {
     assert_eq!(again.files, 0);
     assert_eq!(again.skipped_files as usize, fx.files.len());
     assert_eq!(again.downloaded_bytes, again.index_bytes);
-    assert_eq!(server.requests().len(), 2, "probe + tail, no data");
+    assert_eq!(
+        server.requests().len(),
+        3,
+        "probe + If-Range check + tail, no data"
+    );
     assert_tree_matches(out.path(), &fx, |_| true, |_| true);
 }
 

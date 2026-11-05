@@ -196,10 +196,10 @@ fn a_zip_bomb_is_stopped_and_leaves_no_file_behind() {
         !files.iter().any(|f| f.starts_with("bomb.bin")),
         "{files:?}"
     );
-    // Fatal errors are not retried: probe + tail + a single data request.
+    // Fatal errors are not retried: probe + its If-Range check + tail + a single data request.
     assert_eq!(
         case.server.requests().len(),
-        3,
+        4,
         "{:?}",
         case.server.requests()
     );
@@ -237,7 +237,7 @@ fn a_wrong_crc_is_detected_and_the_bad_file_never_gets_its_real_name() {
     );
     assert_eq!(
         case.server.requests().len(),
-        3,
+        4,
         "a CRC error is fatal, not retried"
     );
 }

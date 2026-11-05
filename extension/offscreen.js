@@ -42,7 +42,7 @@ async function openSink(target, job) {
       throw new Coded("folder_not_writable", `Couldn't create the folder ${target.sub} in ${root.name}.`, { detail: `${e?.name}: ${e?.message}` });
     }
   }
-  return folderSink(dir, folderLabel(root.name, target.sub));
+  return folderSink(dir, folderLabel(root.name, target.sub), target.sub || null);
 }
 
 // Offscreen pages have no chrome.downloads: the background saves the blob. If Chrome restarts the

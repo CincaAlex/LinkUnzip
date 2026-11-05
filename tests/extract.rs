@@ -77,10 +77,10 @@ fn one_range_request_per_span_not_per_file() {
     let out = tempfile::tempdir().unwrap();
     extract::run(&options(server.url_for(&fx.zip_name), out.path(), &[], 1)).unwrap();
 
-    // probe + tail (index) + exactly one request for all 203 files
+    // probe + If-Range check + tail (index) + exactly one request for all 203 files
     let requests = server.requests();
-    assert_eq!(requests.len(), 3, "{requests:?}");
-    let (start, end) = requests[2].range.unwrap();
+    assert_eq!(requests.len(), 4, "{requests:?}");
+    let (start, end) = requests[3].range.unwrap();
     let first_file = fx.files.iter().map(|f| f.header_offset).min().unwrap();
     assert_eq!(
         start, first_file,
@@ -106,7 +106,7 @@ fn downloaded_and_requests_include_the_index_reads() {
     let log = server.requests();
     assert_eq!(summary.requests, log.len() as u64, "{log:?}");
     let sent = |r: &common::server::RequestLog| r.range.map_or(0, |(s, e)| e - s + 1);
-    let index: u64 = log.iter().take(2).map(sent).sum(); // probe + tail
+    let index: u64 = log.iter().take(3).map(sent).sum(); // probe + If-Range check + tail
     assert!(summary.index_bytes > 0);
     assert_eq!(summary.index_bytes, index, "{log:?}");
     assert!(summary.downloaded_bytes >= summary.index_bytes);
@@ -135,7 +135,7 @@ fn data_ranges(server: &TestServer) -> Vec<(u64, u64)> {
     let mut ranges: Vec<_> = server
         .requests()
         .iter()
-        .skip(2)
+        .skip(3)
         .filter_map(|r| r.range)
         .collect();
     ranges.sort();
@@ -240,7 +240,7 @@ fn a_dropped_connection_mid_file_is_retried_from_the_start_of_that_file() {
     assert_tree_matches(out.path(), &fx, |_| true, |_| true);
     assert_eq!(summary.retries, 1);
 
-    let data: Vec<_> = server.requests().into_iter().skip(2).collect(); // after probe + tail
+    let data: Vec<_> = server.requests().into_iter().skip(3).collect(); // after probe, If-Range check and tail
     assert_eq!(data.len(), 2, "{data:?}");
     assert!(data[0].faulted && !data[1].faulted);
     assert_eq!(
@@ -300,7 +300,7 @@ fn a_persistently_failing_file_is_abandoned_after_five_attempts() {
     assert!(text.contains("after 5 attempts"), "{text}");
 
     // 1 original request + 4 retries, every one cut; the retries all start at the failing file.
-    let data: Vec<_> = server.requests().into_iter().skip(2).collect();
+    let data: Vec<_> = server.requests().into_iter().skip(3).collect();
     assert_eq!(data.len(), 5, "{data:?}");
     assert!(data.iter().all(|r| r.faulted));
     assert!(

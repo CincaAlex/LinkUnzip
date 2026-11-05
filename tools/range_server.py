@@ -11,6 +11,8 @@ This is a stand-in for `caddy file-server` when Caddy is not installed. It is sl
 Options (env vars, to rehearse failure handling):
     DROP_EVERY=N   cut every Nth ranged response in half (simulates a flaky connection)
     MBPS=N         limit each connection to about N MB/s (makes progress easy to watch and record)
+
+If-Range is honoured: a range request naming another version gets the whole file (200).
 """
 
 import http.server
@@ -41,6 +43,9 @@ class RangeHandler(http.server.SimpleHTTPRequestHandler):
             return super().do_GET()
 
         size = os.path.getsize(path)
+        mtime = os.path.getmtime(path)
+        etag = f'"{size:x}-{int(mtime):x}"'
+        last_modified = self.date_time_string(mtime)
         start, end, status = 0, size - 1, 200
         header = self.headers.get("Range")
         if header:
@@ -60,6 +65,10 @@ class RangeHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 return
             status = 206
+            # If-Range: a part only of the version the client names, else the whole file.
+            wanted = self.headers.get("If-Range")
+            if wanted and wanted not in (etag, last_modified):
+                start, end, status = 0, size - 1, 200
 
         length = end - start + 1
         cut_at = None
@@ -73,8 +82,8 @@ class RangeHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Type", self.guess_type(path))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
-        self.send_header("ETag", f'"{size:x}-{int(os.path.getmtime(path)):x}"')
-        self.send_header("Last-Modified", self.date_time_string(os.path.getmtime(path)))
+        self.send_header("ETag", etag)
+        self.send_header("Last-Modified", last_modified)
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()

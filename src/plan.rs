@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use glob::{MatchOptions, Pattern};
@@ -96,18 +96,38 @@ pub(crate) const GLOB_OPTIONS: MatchOptions = MatchOptions {
 /// archive (with `/` as the separator even where the archive used `\`); a path ending in `/` is a
 /// folder and stands for everything below it. An entry is selected when it equals or lies under
 /// one of `paths` (no `paths` = everything) and does not equal or lie under any of `exclude`.
+///
+/// Or the file list's ticks as they are (`marks`, path -> ticked, "" for the whole zip): each
+/// entry follows its own mark or its nearest marked folder, and is ticked with no mark on the way
+/// up. When `marks` is given, `paths` and `exclude` are not used.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct Selection {
     #[serde(default)]
     pub paths: Vec<String>,
     #[serde(default)]
     pub exclude: Vec<String>,
+    #[serde(default)]
+    pub marks: Option<HashMap<String, bool>>,
 }
 
 impl Selection {
     pub fn is_everything(&self) -> bool {
-        self.paths.is_empty() && self.exclude.is_empty()
+        self.paths.is_empty() && self.exclude.is_empty() && self.marks.is_none()
     }
+}
+
+/// The mark `path` follows: its own, its nearest marked folder's, the whole zip's, or ticked.
+fn nearest_mark(marks: &HashMap<String, bool>, path: &str) -> bool {
+    if let Some(&m) = marks.get(path) {
+        return m;
+    }
+    let inner = path.strip_suffix('/').unwrap_or(path);
+    for (i, _) in inner.rmatch_indices('/') {
+        if let Some(&m) = marks.get(&path[..=i]) {
+            return m;
+        }
+    }
+    marks.get("").copied().unwrap_or(true)
 }
 
 /// An entry's path the way the file list shows it: `\` (written by some Windows tools) becomes
@@ -136,6 +156,7 @@ pub struct Filter {
     patterns: Vec<Pattern>,
     paths: HashSet<String>,
     exclude: HashSet<String>,
+    marks: Option<HashMap<String, bool>>,
 }
 
 impl Filter {
@@ -148,6 +169,7 @@ impl Filter {
         let mut filter = Filter::globs(includes)?;
         filter.paths = selection.paths.into_iter().collect();
         filter.exclude = selection.exclude.into_iter().collect();
+        filter.marks = selection.marks;
         Ok(filter)
     }
 
@@ -180,6 +202,9 @@ impl Filter {
         if !globs {
             return false;
         }
+        if let Some(marks) = &self.marks {
+            return nearest_mark(marks, &list_path(name));
+        }
         if self.paths.is_empty() && self.exclude.is_empty() {
             return true;
         }
@@ -189,7 +214,7 @@ impl Filter {
 
     /// Why nothing was selected.
     pub(crate) fn nothing_selected(&self) -> String {
-        if !self.paths.is_empty() || !self.exclude.is_empty() {
+        if !self.paths.is_empty() || !self.exclude.is_empty() || self.marks.is_some() {
             "nothing in the archive matches the selection".to_string()
         } else if self.patterns.is_empty() {
             "the archive contains no entries".to_string()
@@ -198,6 +223,108 @@ impl Filter {
                 "no entries in the archive match --include {}",
                 self.includes.join(", ")
             )
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// The zip's own top folder
+// ------------------------------------------------------------------------------------------
+
+/// An entry name's first folder, as written in the zip, or `None` for a file at the top.
+pub fn top_of(name: &str, dir: bool) -> Option<String> {
+    let unified = list_path(name);
+    match unified.find('/') {
+        None => dir.then(|| unified.into_owned()),
+        Some(i) if i > 0 && (i < unified.len() - 1 || dir) => Some(unified[..i].to_string()),
+        _ => None,
+    }
+}
+
+/// Does a zip folder called `top` go into a folder called `folder` (blender-4.2 into blender-4.2)?
+pub fn same_folder(top: &str, folder: &str) -> bool {
+    !top.is_empty() && top.to_lowercase() == folder.to_lowercase()
+}
+
+/// The folder every entry of the archive sits in, when it has the name of the output folder
+/// (`...\blender-4.2` for blender-4.2.zip, which holds blender-4.2/...). Its contents then go
+/// straight there instead of into `...\blender-4.2\blender-4.2`. `None` otherwise.
+pub fn wrapping_folder(entries: &[Entry], folder: &str) -> Option<String> {
+    let first = entries.first()?;
+    let top = top_of(&first.name, first.is_dir())?;
+    if !same_folder(&top, folder) {
+        return None;
+    }
+    entries
+        .iter()
+        .all(|e| top_of(&e.name, e.is_dir()).as_deref() == Some(top.as_str()))
+        .then_some(top)
+}
+
+/// A sanitised path without its first folder. A file right in it may not take the journal's
+/// name now that it lands at the top: then it gets a `_` (and the `bool` is true).
+pub fn without_top(path: &Path) -> (PathBuf, bool) {
+    let rest: PathBuf = path.components().skip(1).collect();
+    if rest
+        .to_str()
+        .is_some_and(|p| p.eq_ignore_ascii_case(crate::resume::JOURNAL_NAME))
+    {
+        return (PathBuf::from(format!("_{}", rest.display())), true);
+    }
+    (rest, false)
+}
+
+/// Does `folder` hold nothing but the folder `name` (besides the resume journal)? Then an earlier
+/// version extracted there with the zip's own top folder, and Resume keeps that layout.
+pub fn holds_only(folder: &Path, name: &str) -> bool {
+    let Ok(read) = std::fs::read_dir(folder) else {
+        return false;
+    };
+    let mut seen = None;
+    for e in read.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.eq_ignore_ascii_case(crate::resume::JOURNAL_NAME) {
+            continue;
+        }
+        if seen.is_some() {
+            return false;
+        }
+        seen = Some((n, e.file_type().is_ok_and(|t| t.is_dir())));
+    }
+    matches!(seen, Some((n, true)) if same_folder(&n, name))
+}
+
+impl Checked {
+    /// The same files with the wrapping folder left out of every output path.
+    pub fn without_top(self) -> Checked {
+        let slashed = |p: &Path| p.to_string_lossy().replace('\\', "/");
+        let mut renames: Vec<(String, String)> = self
+            .renames
+            .into_iter()
+            .map(|(from, to)| (from, slashed(&without_top(Path::new(&to)).0)))
+            .collect();
+        let files = self
+            .files
+            .into_iter()
+            .map(|mut f| {
+                let (path, renamed) = without_top(&f.rel_path);
+                if renamed {
+                    renames.push((f.entry.name.clone(), slashed(&path)));
+                }
+                f.rel_path = path;
+                f
+            })
+            .collect();
+        let dirs = self
+            .dirs
+            .into_iter()
+            .filter(|d| d.components().count() > 1)
+            .map(|d| without_top(&d).0)
+            .collect();
+        Checked {
+            files,
+            dirs,
+            renames,
         }
     }
 }
@@ -514,6 +641,7 @@ mod tests {
         let sel = |paths: &[&str], exclude: &[&str]| Selection {
             paths: paths.iter().map(|s| s.to_string()).collect(),
             exclude: exclude.iter().map(|s| s.to_string()).collect(),
+            marks: None,
         };
         let f = Filter::with_selection(&[], Some(&sel(&["a/", "top.txt"], &["a/b/", "a/x.txt"])))
             .unwrap();
@@ -551,11 +679,126 @@ mod tests {
             Some(&Selection {
                 paths: vec!["missing/".into()],
                 exclude: vec![],
+                marks: None,
             }),
         )
         .unwrap();
         let err = check(&idx, &f).unwrap_err().to_string();
         assert!(err.contains("matches the selection"), "{err}");
+
+        let none = Selection {
+            marks: Some(HashMap::from([(String::new(), false)])),
+            ..Selection::default()
+        };
+        let f = Filter::with_selection(&[], Some(&none)).unwrap();
+        let err = check(&idx, &f).unwrap_err().to_string();
+        assert!(err.contains("matches the selection"), "{err}");
+    }
+
+    #[test]
+    fn marks_follow_the_nearest_mark_like_the_browser_engine() {
+        let marks = |m: &[(&str, bool)]| Selection {
+            marks: Some(m.iter().map(|(k, v)| (k.to_string(), *v)).collect()),
+            ..Selection::default()
+        };
+        // Everything off, a folder on, a folder inside it off, a file inside that on again.
+        let f = Filter::with_selection(
+            &[],
+            Some(&marks(&[
+                ("", false),
+                ("a/", true),
+                ("a/b/", false),
+                ("a/b/keep.txt", true),
+            ])),
+        )
+        .unwrap();
+        assert!(f.matches("a/x.txt") && f.matches("a/c/d.txt") && f.matches("a/"));
+        assert!(!f.matches("a/b/y.txt") && !f.matches("a/b/deep/z.txt"));
+        assert!(
+            f.matches("a/b/keep.txt"),
+            "a tick inside an unticked folder"
+        );
+        assert!(!f.matches("top.txt") && !f.matches("other/x.txt"));
+        assert!(f.matches(r"a\win.txt"), "backslashes count as separators");
+
+        // No mark on the way up: ticked.
+        let f = Filter::with_selection(&[], Some(&marks(&[("big/", false)]))).unwrap();
+        assert!(f.matches("x.txt") && !f.matches("big/y.bin") && f.matches("bigger/z"));
+
+        // Combined with --include: both must agree.
+        let f =
+            Filter::with_selection(&["*.csv".to_string()], Some(&marks(&[("", true)]))).unwrap();
+        assert!(f.matches("data/x.csv") && !f.matches("data/x.txt"));
+    }
+
+    #[test]
+    fn the_zips_own_top_folder() {
+        let idx =
+            |names: &[&str]| -> Vec<Entry> { names.iter().map(|n| entry(n, 0, 1, 1)).collect() };
+        let one = idx(&["proj-main/", "proj-main/a.txt", "proj-main/src/b.rs"]);
+        assert_eq!(
+            wrapping_folder(&one, "proj-main").as_deref(),
+            Some("proj-main")
+        );
+        assert_eq!(
+            wrapping_folder(&one, "PROJ-MAIN").as_deref(),
+            Some("proj-main")
+        );
+        assert_eq!(
+            wrapping_folder(&one, "other"),
+            None,
+            "a folder of another name"
+        );
+        assert_eq!(
+            wrapping_folder(&idx(&["proj-main/a.txt", "NOTICE"]), "proj-main"),
+            None,
+            "a file outside it"
+        );
+        assert_eq!(
+            wrapping_folder(&idx(&["proj-main/a.txt", "proj-mainx/b.txt"]), "proj-main"),
+            None
+        );
+        assert_eq!(
+            wrapping_folder(&idx(&[r"proj-main\a.txt", "proj-main/b.txt"]), "proj-main").as_deref(),
+            Some("proj-main"),
+            "backslashes count as separators"
+        );
+        assert_eq!(
+            wrapping_folder(&idx(&["proj-main"]), "proj-main"),
+            None,
+            "a file, not a folder"
+        );
+        assert_eq!(wrapping_folder(&[], "x"), None);
+
+        let (p, renamed) = without_top(Path::new("top/src/b.rs"));
+        assert_eq!((p, renamed), (PathBuf::from("src").join("b.rs"), false));
+        let (p, renamed) = without_top(Path::new("top/.linkunzip-resume.jsonl"));
+        assert_eq!(
+            (p, renamed),
+            (PathBuf::from("_.linkunzip-resume.jsonl"), true)
+        );
+
+        let checked = check(
+            &laid_out(&[
+                ("top/", 0),
+                ("top/a.txt", 10),
+                ("top/d/", 0),
+                ("top/d/c.txt", 10),
+            ]),
+            &Filter::new(&[]).unwrap(),
+        )
+        .unwrap()
+        .without_top();
+        let paths: Vec<_> = checked.files.iter().map(|f| f.rel_path.clone()).collect();
+        assert_eq!(
+            paths,
+            [PathBuf::from("a.txt"), PathBuf::from("d").join("c.txt")]
+        );
+        assert_eq!(
+            checked.dirs,
+            [PathBuf::from("d")],
+            "the top folder itself goes"
+        );
     }
 
     #[test]

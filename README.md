@@ -68,6 +68,12 @@ Sizes are shown the way Windows shows them (1 GB = 1024 MB).
   much faster for zips with thousands of files.
 - **Fast.** Several connections at once (4 by default, up to 16).
 - **Resume.** Stopped halfway, or the network dropped? Resume skips the files that are already done.
+- **Password-protected zips.** ZipCrypto and WinZip AES, as made by Windows, 7-Zip and WinZip. The
+  password is asked for before anything starts and never saved.
+- **Zips inside zips.** *Open* on a zip in the File List shows its own files, read through the
+  outer zip.
+- **Servers that send the whole file at once,** like GitHub's green *Download ZIP*: *Extract
+  everything (one pass)* reads the zip once, still without saving it.
 - **Big archives.** ZIP64, no 2 GB limit.
 - **Private links.** If a download needs your login, LinkUnzip asks before using it on that site.
 - **Light and dark**, following your system or your choice.
@@ -87,14 +93,16 @@ use a link on a new site) and choose where extracted files go.
 
 ### Optional: the helper for Windows
 
-A small helper program adds a few things the browser can't do on its own:
+LinkUnzip works without it. A small helper program adds a few things, once you turn on
+**Settings > Extract with the Windows helper**:
 
-- servers that can only send a file from start to end, like GitHub's green **Download ZIP**
-  (*Stream it anyway* reads them in one pass, still without saving the zip);
-- **Open folder** after extracting into a folder you chose, and the free space on the drive in the
-  Cost Analysis;
-- more speed for zips with thousands of small files (Blender 4.2: 15 to 22 s instead of 52 s);
-- the [`linkunzip` command line](#command-line).
+- it saves straight into `Downloads\<zip name>`, which is much faster for zips with thousands of
+  small files (Blender 4.2: 15 to 22 s instead of 52 s);
+- **Open folder** opens that folder in Explorer.
+
+Password-protected zips, zips inside zips and links that need your login are still extracted in
+the browser; the popup says which one extracts a zip before you start. The helper also brings the
+[`linkunzip` command line](#command-line).
 
 To install it, download
 [`linkunzip-setup.exe`](https://github.com/CincaAlex/LinkUnzip/releases/latest/download/linkunzip-setup.exe)
@@ -159,13 +167,12 @@ call it `LinkUnzip` and pick that.
 
 ## What it doesn't do (yet)
 
-- Password-protected zips, and compression other than the two common methods (stored and deflate).
-  LinkUnzip names the files it can't extract instead of failing silently. Both are planned.
+- Compression other than the two common methods (stored and deflate), and PKWARE's strong
+  encryption. LinkUnzip names the files it can't extract instead of failing silently.
 - RAR or 7z from a link, or creating archives.
 - Downloads that only exist inside a web page (`blob:` links, like WhatsApp Web), or links that need
   a form POST or a one-time token.
-- Servers that can't send parts of a file, without the [helper](#optional-the-helper-for-windows).
-- The free space on your drive, without the helper (browsers don't tell extensions).
+- The free space on your drive (browsers don't tell extensions).
 
 LinkUnzip runs wherever Chrome does, but it has been tested on Windows so far; the helper is Windows
 only. The extracted files still need their disk space; what LinkUnzip saves is the room the zip
@@ -223,7 +230,7 @@ fresh link from the page.
 
 The full experience (cost preview, choosing files, parallel connections) needs a server that can
 send parts of a file (HTTP Range requests). Most download servers, CDNs and cloud storage can. For
-the others there is *Stream it anyway*, with the [helper](#optional-the-helper-for-windows), or
+the others there is **Extract everything (one pass)**, which reads the zip once in the browser, or
 **Download normally**.
 
 ### Is it safe to extract a zip I don't trust?

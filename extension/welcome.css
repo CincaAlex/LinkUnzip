@@ -1,55 +1,129 @@
-/* The setup page: same zinc greys as popup.css and the same theme choice
+/* The setup page: same neutral greys as popup.css and the same theme choice
    (theme.js sets data-theme before the first paint; none = follow Windows). Text at least 4.5:1. */
+
 :root {
   color-scheme: light;
   --bg: #f4f4f5;
   --surface: #ffffff;
+  --surface-2: #f0f0f2;
   --border: #e4e4e7;
-  --text: #09090b;
-  --muted: #52525b;
-  --accent: #18181b;
-  --accent-ink: #fafafa;
-  --accent-soft: rgba(9, 9, 11, 0.05);
-  --accent-line: rgba(9, 9, 11, 0.3);
-  --focus: #09090b;
-  --ok: #1b7343;
+  --border-strong: #d4d4d8;
+  --text: #111113;
+  --muted: #5c5c63;
+  --muted-on-2: #5c5c63;
+  --accent: #111113;
+  --accent-strong: #3f3f46;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(17, 17, 19, 0.05);
+  --accent-line: rgba(17, 17, 19, 0.3);
+  --action: #111113;
+  --action-ink: #f4f4f5;
+  --action-hover: #2a2a2e;
+  --hover: rgba(17, 17, 19, 0.04);
+  --focus: rgba(17, 17, 19, 0.6);
+  --track: #e4e4e7;
+  --zip: #b4b4bb;
+  --head-end: #0b0b0c;
+  --head-line: #0b0b0c;
+  --head-text: #ededef;
+  --head-muted: #8e8e96;
+  --foot-bg: #f4f4f5;
+  --ok: #1d7a3d;
+  --ok-soft: rgba(29, 122, 61, 0.07);
   --warn: #8f5400;
-  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
-  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --warn-line: rgba(143, 84, 0, 0.35);
+  --warn-soft: rgba(143, 84, 0, 0.06);
+  --err: #b42b3a;
+  --err-line: rgba(180, 43, 58, 0.35);
+  --err-soft: rgba(180, 43, 58, 0.06);
+  --edge: none;
+  --watermark-filter: invert(1);
+  --sans: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --display: "Geist", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
 }
 
+/* Dark: when Windows is dark and the user has not picked Light, or when the user picked Dark.
+   The two blocks hold the same values. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #18181b;
-    --surface: #27272a;
-    --border: #3f3f46;
-    --text: #fafafa;
-    --muted: #a1a1aa;
-    --accent: #fafafa;
-    --accent-ink: #09090b;
-    --accent-soft: rgba(250, 250, 250, 0.08);
-    --accent-line: rgba(250, 250, 250, 0.3);
-    --focus: #fafafa;
-    --ok: #7ad9a1;
-    --warn: #f0b46a;
+    --bg: #0f0f11;
+    --surface: #161618;
+    --surface-2: #1f1f22;
+    --border: #232326;
+    --border-strong: #323237;
+    --text: #ededef;
+    --muted: #8e8e96;
+    --muted-on-2: #c4c4ca;
+    --accent: #e4e4e7;
+    --accent-strong: #c4c4ca;
+    --accent-ink: #0f0f11;
+    --accent-soft: rgba(237, 237, 239, 0.06);
+    --accent-line: rgba(237, 237, 239, 0.28);
+    --action: #e4e4e7;
+    --action-ink: #0f0f11;
+    --action-hover: #f4f4f5;
+    --hover: rgba(255, 255, 255, 0.04);
+    --focus: rgba(237, 237, 239, 0.6);
+    --track: #232326;
+    --zip: #45454b;
+    --head-end: #0b0b0c;
+    --head-line: #1c1c1f;
+    --head-text: #ededef;
+    --head-muted: #8e8e96;
+    --foot-bg: #0b0b0c;
+    --ok: #7fcf9f;
+    --ok-soft: rgba(127, 207, 159, 0.08);
+    --warn: #e8b478;
+    --warn-line: rgba(232, 180, 120, 0.35);
+    --warn-soft: rgba(232, 180, 120, 0.07);
+    --err: #f08a8a;
+    --err-line: rgba(240, 138, 138, 0.35);
+    --err-soft: rgba(240, 138, 138, 0.08);
+    --edge: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    --watermark-filter: none;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #18181b;
-  --surface: #27272a;
-  --border: #3f3f46;
-  --text: #fafafa;
-  --muted: #a1a1aa;
-  --accent: #fafafa;
-  --accent-ink: #09090b;
-  --accent-soft: rgba(250, 250, 250, 0.08);
-  --accent-line: rgba(250, 250, 250, 0.3);
-  --focus: #fafafa;
-  --ok: #7ad9a1;
-  --warn: #f0b46a;
+  --bg: #0f0f11;
+  --surface: #161618;
+  --surface-2: #1f1f22;
+  --border: #232326;
+  --border-strong: #323237;
+  --text: #ededef;
+  --muted: #8e8e96;
+  --muted-on-2: #c4c4ca;
+  --accent: #e4e4e7;
+  --accent-strong: #c4c4ca;
+  --accent-ink: #0f0f11;
+  --accent-soft: rgba(237, 237, 239, 0.06);
+  --accent-line: rgba(237, 237, 239, 0.28);
+  --action: #e4e4e7;
+  --action-ink: #0f0f11;
+  --action-hover: #f4f4f5;
+  --hover: rgba(255, 255, 255, 0.04);
+  --focus: rgba(237, 237, 239, 0.6);
+  --track: #232326;
+  --zip: #45454b;
+  --head-end: #0b0b0c;
+  --head-line: #1c1c1f;
+  --head-text: #ededef;
+  --head-muted: #8e8e96;
+  --foot-bg: #0b0b0c;
+  --ok: #7fcf9f;
+  --ok-soft: rgba(127, 207, 159, 0.08);
+  --warn: #e8b478;
+  --warn-line: rgba(232, 180, 120, 0.35);
+  --warn-soft: rgba(232, 180, 120, 0.07);
+  --err: #f08a8a;
+  --err-line: rgba(240, 138, 138, 0.35);
+  --err-soft: rgba(240, 138, 138, 0.08);
+  --edge: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  --watermark-filter: none;
 }
+
 * {
   box-sizing: border-box;
 }
@@ -86,13 +160,14 @@ header img {
 
 h1 {
   margin: 0;
-  font-size: 26px;
-  letter-spacing: 0.01em;
+  font: 600 28px/1.2 var(--display);
+  letter-spacing: -0.02em;
 }
 
 h2 {
   margin: 0 0 4px;
-  font-size: 17px;
+  font: 600 17px/1.3 var(--display);
+  letter-spacing: -0.01em;
 }
 
 p {
@@ -131,8 +206,9 @@ a {
   gap: 14px;
   padding: 18px 20px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--surface);
+  box-shadow: var(--edge);
 }
 
 /* A step that is not reached yet: dimmed, but its text stays readable. */
@@ -145,7 +221,7 @@ a {
 
 .step[data-state="next"] {
   border-color: var(--accent-line);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: var(--edge), 0 0 0 3px var(--accent-soft);
 }
 
 .mark {
@@ -153,28 +229,28 @@ a {
   height: 26px;
   margin-top: 1px;
   border-radius: 50%;
-  border: 2px solid var(--border);
+  border: 2px solid var(--border-strong);
   display: grid;
   place-items: center;
   font: 700 14px/1 var(--sans);
 }
 
 .step[data-state="done"] .mark {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--action-ink);
 }
 .step[data-state="done"] .mark::before {
   content: "✓";
 }
 
 .step[data-state="next"] .mark {
-  border-color: var(--accent);
+  border-color: var(--accent-strong);
 }
 
 .step[data-state="checking"] .mark {
   border-color: var(--border);
-  border-top-color: var(--accent);
+  border-top-color: var(--accent-strong);
   animation: spin 0.9s linear infinite;
 }
 
@@ -215,17 +291,23 @@ a {
 
 .btn {
   display: inline-block;
-  padding: 10px 16px;
-  border-radius: 10px;
+  padding: 9px 16px;
+  border-radius: 8px;
   border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--edge);
   color: var(--text);
   text-decoration: none;
-  font-weight: 600;
+  font-weight: 500;
+  transition: background-color 0.12s, border-color 0.12s;
+}
+.btn:hover {
+  border-color: var(--border-strong);
 }
 
 button.btn {
   font: inherit;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
 }
 button.btn:disabled {
@@ -234,20 +316,19 @@ button.btn:disabled {
 }
 
 .btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--action-ink);
 }
 .btn.primary:hover {
-  filter: brightness(1.08);
+  background: var(--action-hover);
+  border-color: var(--action-hover);
 }
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
-.btn.primary:focus-visible {
-  outline-color: var(--text);
-}
+
 
 .btn.disabled {
   color: var(--muted);

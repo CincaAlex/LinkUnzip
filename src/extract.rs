@@ -67,6 +67,10 @@ pub struct ExtractOptions {
     /// Skip the files that are already in the output folder with the right size and CRC-32
     /// (see `resume`). Off = extract everything again (`--overwrite`).
     pub resume: bool,
+    /// When every entry sits in one folder named like the output folder (blender-4.2.zip into
+    /// `Downloads/blender-4.2`), put that folder's contents straight into the output folder (see
+    /// `plan::wrapping_folder`). The browser extension asks for it; the command line doesn't.
+    pub drop_top: bool,
 }
 
 #[derive(Debug)]
@@ -118,6 +122,17 @@ struct Ctx<'a> {
     journal: Option<&'a Journal>,
 }
 
+/// The archive's own top folder, when `opts.drop_top` asks for it to be left out and the output
+/// folder doesn't already hold it (an extraction by an earlier version, which keeps its layout).
+pub(crate) fn top_to_drop(opts: &ExtractOptions, entries: &[crate::zip::Entry]) -> Option<String> {
+    if !opts.drop_top {
+        return None;
+    }
+    let folder = opts.output.file_name()?.to_string_lossy().into_owned();
+    let top = plan::wrapping_folder(entries, &folder)?;
+    (!plan::holds_only(&opts.output, &top)).then_some(top)
+}
+
 /// Extract the archive at `opts.url` into `opts.output`.
 pub fn run(opts: &ExtractOptions) -> Result<Summary> {
     if opts.stream {
@@ -132,7 +147,10 @@ pub fn run(opts: &ExtractOptions) -> Result<Summary> {
 
     // Everything is validated before the first byte is written.
     let filter = Filter::with_selection(&opts.include, opts.select.as_ref())?;
-    let checked = plan::check(&index, &filter)?;
+    let mut checked = plan::check(&index, &filter)?;
+    if top_to_drop(opts, &index.entries).is_some() {
+        checked = checked.without_top();
+    }
     let identity = Identity::new(src.size, src.etag.clone(), src.last_modified.clone());
     // Resume: what an earlier run (or anything else) already put into the folder correctly is
     // neither downloaded nor written again.

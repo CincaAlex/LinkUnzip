@@ -7,13 +7,17 @@
 //
 // Sinks may keep a record of finished files for Resume (`begin`, `finished`, `end`): the folder
 // sink writes the helper's .linkunzip-resume.jsonl, the Downloads sink remembers what it saved.
+//
+// Encrypted files: the password is checked on the first one before anything is written. A later
+// file the password doesn't open (a zip can have more than one) is left out and reported.
 
 import { crc32 } from "./crc32.js";
-import { entryChunks, seekToData } from "./entry.js";
+import { checksCrc } from "./crypto.js";
+import { checkPassword, decryptorFor, entryChunks, seekToData } from "./entry.js";
 import { Coded, failed, isTransient } from "./errors.js";
-import { check, splitSpans } from "./plan.js";
+import { check, dropTop, splitSpans, wrappingFolder } from "./plan.js";
 import { ByteReader, RETRY, delayAfter, sleep } from "./source.js";
-import { METHOD_STORED } from "./zip.js";
+import { METHOD_STORED, needsPassword } from "./zip.js";
 
 const PROGRESS_MS = 250;
 /** A stored file that got this much further since its last drop counts its drops afresh. */
@@ -38,6 +42,7 @@ class Stats {
     this.indexBytes = src.indexBytes;
     this.indexRequests = src.indexRequests;
     this.skipped = { files: 0, compressed: 0, extracted: 0 };
+    this.otherPassword = [];
     this.active = new Set();
     this.started = Date.now();
     this.samples = [];
@@ -128,15 +133,22 @@ async function mapLimit(items, limit, fn) {
  * Extract the entries `filter` selects from `index` (read from `src`) into `sink`.
  * `onProgress` gets a progress message about four times a second.
  */
-export async function extract({ src, index, filter, sink, jobs = 4, resume = false, signal, onProgress = () => {} }) {
-  const checked = check(index, filter);
+export async function extract({ src, index, filter, sink, jobs = 4, resume = false, password = null, signal, onProgress = () => {} }) {
+  let checked = check(index, filter);
+  const locked = checked.files.find((f) => needsPassword(f.entry));
+  if (locked) await checkPassword(src, locked.entry, password);
   const begun = await sink.begin?.({ key: src.identityKey?.() ?? null, identity: identityOf(src), resume });
+  // blender-4.2.zip holds blender-4.2/...: its contents go straight into Downloads/blender-4.2,
+  // unless that folder already holds blender-4.2 itself (an earlier version's extraction, which
+  // Resume carries on the way it started).
+  const top = wrappingFolder(index.entries, sink.folder);
+  if (top && !(await sink.holdsOnly?.(top).catch(() => false))) checked = dropTop(checked);
   // A fresh start into a folder an unfinished run of this same zip left behind carries on too:
   // the files its journal lists are skipped.
   const earlier = !resume && begun?.earlier > 0;
   let summary;
   try {
-    summary = await run({ src, checked, sink, jobs, resume: resume || earlier, journalOnly: earlier, signal, onProgress });
+    summary = await run({ src, checked, sink, jobs, resume: resume || earlier, journalOnly: earlier, password, signal, onProgress });
   } catch (e) {
     await sink.end?.(false).catch(() => {});
     throw e;
@@ -145,7 +157,7 @@ export async function extract({ src, index, filter, sink, jobs = 4, resume = fal
   return summary;
 }
 
-async function run({ src, checked, sink, jobs, resume, journalOnly, signal, onProgress }) {
+async function run({ src, checked, sink, jobs, resume, journalOnly, password, signal, onProgress }) {
   const inner = new AbortController();
   const stop = () => inner.abort(signal.reason);
   if (signal.aborted) stop();
@@ -207,13 +219,18 @@ async function run({ src, checked, sink, jobs, resume, journalOnly, signal, onPr
               const resp = await src.openRange(from, span.end, inner.signal);
               reader = new ByteReader(resp.body, from);
             }
-            await extractEntry(reader, file, sink, stats, tally, inner.signal, finish, carry);
+            await extractEntry(reader, file, sink, stats, tally, inner.signal, finish, carry, password);
             break;
           } catch (e) {
+            if (e?.code === "password_wrong" && !carry.out) {
+              // Encrypted with another password than the rest: left out, the next file goes on.
+              stats.otherPassword.push(file.entry.name);
+              break;
+            }
             reader?.cancel();
             reader = null;
             const again = isTransient(e) && attempt < RETRY.attempts && !inner.signal.aborted;
-            if (again && carry.out && file.entry.method === METHOD_STORED) {
+            if (again && carry.out && file.entry.method === METHOD_STORED && !needsPassword(file.entry)) {
               // Keep what arrived; the next request starts where it stopped.
               carry.downloaded += tally.downloaded;
               carry.extracted += tally.extracted;
@@ -286,6 +303,8 @@ async function run({ src, checked, sink, jobs, resume, journalOnly, signal, onPr
     held: sink.held?.length || 0,
     held_sample: (sink.held || []).slice(0, 5),
     held_ids: (sink.held || []).slice(0, 1000).map((f) => f.id),
+    other_password: stats.otherPassword.length,
+    other_password_sample: stats.otherPassword.slice(0, 5),
     stream: false,
   };
 }
@@ -295,10 +314,11 @@ async function run({ src, checked, sink, jobs, resume, journalOnly, signal, onPr
  * data), streamed, checked and handed to `finish`. On failure the file stays open in `carry`; the
  * caller decides whether it goes on or is thrown away.
  */
-async function extractEntry(reader, file, sink, stats, tally, signal, finish, carry) {
+async function extractEntry(reader, file, sink, stats, tally, signal, finish, carry, password) {
   const entry = file.entry;
   if (!carry.out) {
     await seekToData(reader, entry);
+    carry.dec = await decryptorFor(reader, entry, password);
     carry.dataStart = reader.pos;
     carry.out = await sink.create(file.parts, entry);
     carry.crc = 0;
@@ -310,7 +330,7 @@ async function extractEntry(reader, file, sink, stats, tally, signal, finish, ca
     tally.downloaded += n;
   };
   try {
-    for await (const chunk of entryChunks(reader, entry, onData, carry.written)) {
+    for await (const chunk of entryChunks(reader, entry, onData, carry.written, carry.dec)) {
       if (signal.aborted) throw signal.reason;
       if (carry.written + chunk.length > entry.usize) {
         throw failed(`the data expands beyond the ${entry.usize} bytes declared for this entry (zip bomb or corrupt archive)`);
@@ -323,12 +343,12 @@ async function extractEntry(reader, file, sink, stats, tally, signal, finish, ca
     }
   } catch (e) {
     // Padding after a complete deflate stream: fine when everything else checks out.
-    if (!(e.junk && carry.written === entry.usize && carry.crc === entry.crc)) throw e;
+    if (!(e.junk && carry.written === entry.usize && (carry.crc === entry.crc || !checksCrc(entry)))) throw e;
   }
   if (carry.written !== entry.usize) {
     throw failed(`size mismatch: the entry says ${entry.usize} bytes, the data gave ${carry.written}`);
   }
-  if (carry.crc !== entry.crc) {
+  if (checksCrc(entry) && carry.crc !== entry.crc) {
     throw failed(`CRC-32 mismatch (expected ${entry.crc.toString(16).padStart(8, "0")}, got ${carry.crc.toString(16).padStart(8, "0")}): the data is corrupt`);
   }
   // Checked: from here on the file only needs its name (close), which may finish later.

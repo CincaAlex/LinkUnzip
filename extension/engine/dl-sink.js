@@ -56,8 +56,9 @@ export function downloadsName(parts) {
 const strictName = (parts) => downloadsName(parts.map((p) => p.replace(/[^\p{L}\p{N} _.()[\]-]/gu, "_"))).parts;
 
 /**
- * A sink into `Downloads/<sub>`. `save({url, filename, path})` asks the background to download
- * the blob URL and answers `{ok, held, code, error}`; `saved` (path -> "crc:size") remembers what
+ * A sink into `Downloads/<sub>`. `save({url, filename, path, depth})` asks the background to
+ * download the blob URL and answers `{ok, held, code, error}` (`depth`: how many folders down the
+ * file is, 1 = right in `<sub>`, for "Open folder"); `saved` (path -> "crc:size") remembers what
  * was saved before, so Resume can skip it. With a `store` (store.js), that record also outlives
  * the engine's page: it is kept per archive version until the extraction finishes.
  */
@@ -90,12 +91,12 @@ export function downloadsSink({ sub, label, save, saved, store = null }) {
     saving += 1;
     const url = URL.createObjectURL(blob);
     try {
-      let r = await save({ url, filename: `${sub}/${name.parts.join("/")}`, path });
+      let r = await save({ url, filename: `${sub}/${name.parts.join("/")}`, path, depth: parts.length });
       if (r.code === "bad_name") {
         name = { parts: strictName(parts), changed: true };
-        r = await save({ url, filename: `${sub}/${name.parts.join("/")}`, path });
+        r = await save({ url, filename: `${sub}/${name.parts.join("/")}`, path, depth: parts.length });
       }
-      if (r.code === "transient") r = await save({ url, filename: `${sub}/${name.parts.join("/")}`, path });
+      if (r.code === "transient") r = await save({ url, filename: `${sub}/${name.parts.join("/")}`, path, depth: parts.length });
       if (!r.ok) throw fromSave(r, path);
       if (name.changed) renames.push([path, name.parts.join("/")]);
       if (r.held) held.push({ name: path, why: r.held, id: r.downloadId });
@@ -115,6 +116,13 @@ export function downloadsSink({ sub, label, save, saved, store = null }) {
     label,
     renames,
     held,
+    folder: sub,
+
+    /** Did what was saved before all go into the folder `name` (the zip's own top folder)? */
+    async holdsOnly(name) {
+      const prefix = `${name.toLowerCase()}/`;
+      return saved.size > 0 && [...saved.keys()].every((p) => p.toLowerCase().startsWith(prefix));
+    },
 
     /** Resume: what an earlier run of this archive saved counts too. A new run starts afresh. */
     async begin({ key, resume }) {

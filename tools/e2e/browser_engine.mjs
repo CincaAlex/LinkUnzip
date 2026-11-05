@@ -7,9 +7,12 @@
 //
 //   python tools/make_test_zips.py all-small --out <data>
 //   set E2E_MODULES=<a folder where `npm i puppeteer-core` ran>
-//   node tools/e2e/browser_engine.mjs <data> [--headful]
+//   node tools/e2e/browser_engine.mjs <data> [--headful] [--features]
+//
+// --features: only the streamed preview (needs ffmpeg on PATH for its videos), passwords, zips
+// inside zips and one-pass extraction.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
@@ -17,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { downloadsName } from "../../extension/engine/dl-sink.js";
+import { bytesOf, makeZip, sha256 } from "../test_zips.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -27,9 +31,14 @@ const DATA = path.resolve(process.argv[2] || "test-data");
 const HEADFUL = process.argv.includes("--headful");
 // --only=small,many: just those archives (and skip the rest of the checks).
 const ONLY = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7).split(",").filter(Boolean);
+const FEATURES_ONLY = process.argv.includes("--features");
 const CHROME = process.env.CHROME || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const PORT = 8191;
 const BASE = `http://127.0.0.1:${PORT}`;
+// The same files, sent at about 3 MB/s (so a video can't arrive whole before it is seeked) ...
+const SLOW = `http://127.0.0.1:${PORT + 1}`;
+// ... and by a server without Range support (like GitHub's Download ZIP).
+const NORANGE = `http://127.0.0.1:${PORT + 2}`;
 let failures = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -118,6 +127,196 @@ function walk(dir, base = dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? walk(path.join(dir, d.name), base) : [path.relative(base, path.join(dir, d.name)).replaceAll("\\", "/")]));
 }
 
+/**
+ * media.zip: a 60 s video stored (seekable from the zip), a short one deflated, one encrypted
+ * (AES, password "media-pw"), a PDF, and two zips inside it, one stored and one deflated. Null
+ * when there is no ffmpeg to make the videos.
+ */
+function mediaZip(dest) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lu-media-"));
+  const video = (name, secs, rate) => {
+    const out = path.join(dir, name);
+    // Noise on top of the test pattern, so the video really is as big as its bit rate says.
+    const r = spawnSync("ffmpeg", ["-loglevel", "error", "-y", "-f", "lavfi", "-i", `testsrc=duration=${secs}:size=640x360:rate=30`, "-vf", "noise=alls=40:allf=t", "-c:v", "libx264", "-preset", "ultrafast", "-b:v", rate, "-minrate", rate, "-maxrate", rate, "-bufsize", rate, "-movflags", "+faststart", out]);
+    return r.status === 0 ? fs.readFileSync(out) : null;
+  };
+  const long = video("long.mp4", 40, "8M");
+  const short = video("short.mp4", 8, "1M");
+  if (!long || !short) return null;
+  const pdf = Buffer.from("%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 144]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj 4 0 obj<</Length 44>>stream\nBT /F1 24 Tf 40 70 Td (LinkUnzip PDF) Tj ET\nendstream endobj 5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF");
+  const innerFiles = { "notes/a.txt": Buffer.from("inside the inner zip\n".repeat(200)), "bin/b.bin": bytesOf(41, 300_000), "c.csv": Buffer.from("x,y\n1,2\n".repeat(500)) };
+  const inner = makeZip(Object.entries(innerFiles).map(([name, data]) => ({ name, data })));
+  fs.writeFileSync(dest, makeZip([
+    { name: "video/stored.mp4", data: long, method: 0 },
+    { name: "video/deflated.mp4", data: short, method: 8 },
+    { name: "video/locked.mp4", data: short, method: 0, encryption: "aes", password: "media-pw" },
+    { name: "doc/manual.pdf", data: pdf, method: 0 },
+    { name: "data.zip", data: inner, method: 0 },
+    { name: "packed.zip", data: inner, method: 8 },
+  ]));
+  return { videoSize: long.length, innerFiles };
+}
+
+/** "7.4 MB" (the viewer's numbers) in bytes. */
+function bytesIn(text) {
+  const m = /([\d.,]+)\s*(B|KB|MB|GB)\b/.exec(text || "");
+  if (!m) return NaN;
+  return Number(m[1].replace(/,/g, "")) * { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 }[m[2]];
+}
+
+let media = null;
+
+/** The job's next run after `since` reaching one of `phases` (not what an earlier run left). */
+async function untilRun(until, jid, since, phases, ms) {
+  const end = Date.now() + (ms || 120000);
+  for (;;) {
+    const j = await until(jid, phases, 1000);
+    if (j && j.startedAt >= since && phases.includes(j.phase)) return j;
+    if (Date.now() > end) return j;
+  }
+}
+
+/** Video, audio and PDF previews streamed by the worker; zips inside zips in Chrome. */
+async function checkMedia({ page, viewer, id, send, until, sha }) {
+  const { id: mj } = await send("inspect", { url: `${SLOW}/media.zip` });
+  const ready = await until(mj, ["ready", "error"]);
+  check(ready?.phase === "ready" && ready.report.encrypted === 1 && ready.report.inner_zips === 2, `media.zip: index read (${ready?.report?.encrypted} encrypted, ${ready?.report?.inner_zips} zips inside)`, JSON.stringify(ready?.error || ready?.report).slice(0, 300));
+  if (ready?.phase !== "ready") return;
+  const open = async (p) => {
+    await viewer.goto(`chrome-extension://${id}/viewer.html?job=${encodeURIComponent(mj)}&path=${encodeURIComponent(p)}`);
+    await sleep(500);
+  };
+  const stats = () => viewer.evaluate(() => document.getElementById("stats").textContent);
+  const playable = () =>
+    viewer
+      .waitForFunction(() => {
+        const v = document.querySelector("#view video");
+        return v && v.readyState >= 2 && v.duration > 0;
+      }, { timeout: 30000 })
+      .then(() => true, () => false);
+
+  // A 40 s stored video: plays, and a seek to 80% downloads only around that point.
+  await open("video/stored.mp4");
+  const plays = await playable();
+  const seek = await viewer.evaluate(async () => {
+    const v = document.querySelector("#view video");
+    v.muted = true;
+    await v.play().catch(() => {});
+    await new Promise((r) => setTimeout(r, 1500));
+    v.currentTime = v.duration * 0.8;
+    await new Promise((r) => {
+      v.onseeked = r;
+      setTimeout(r, 20000);
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    return { duration: v.duration, time: v.currentTime, ready: v.readyState, src: v.src };
+  });
+  await sleep(1200);
+  const s1 = await stats();
+  const got = bytesIn(s1);
+  check(
+    plays && seek.src.includes("/preview/") && Math.abs(seek.time - seek.duration * 0.8) < 3 && seek.ready >= 2 && got < media.videoSize * 0.6,
+    `preview: a 40 s stored video streams and seeks to ${seek.time.toFixed(1)} s, ${(got / 1048576).toFixed(1)} of ${(media.videoSize / 1048576).toFixed(1)} MB downloaded ("${s1}")`,
+    JSON.stringify(seek),
+  );
+
+  // A deflated one: plays from its start.
+  await open("video/deflated.mp4");
+  const deflated = await playable();
+  await sleep(1200);
+  check(deflated && /plays from its start/.test(await stats()), `preview: a deflated video plays ("${await stats()}")`);
+
+  // A PDF: Chrome's viewer reads it from the worker's address.
+  await open("doc/manual.pdf");
+  const pdfSrc = await viewer.evaluate(() => document.querySelector("#view iframe.pdf")?.src || "");
+  check(pdfSrc.includes("/preview/"), "preview: a PDF goes to Chrome's viewer through the worker, not a blob");
+
+  // An encrypted video: the viewer asks for the password; a wrong one is said so.
+  await open("video/locked.mp4");
+  await viewer.waitForSelector("#view input[type=password]", { timeout: 10000 }).catch(() => {});
+  const asked = await viewer.evaluate(() => document.getElementById("view").innerText);
+  await viewer.type("#view input[type=password]", "nope");
+  await viewer.keyboard.press("Enter");
+  await viewer.waitForFunction(() => /doesn't fit/.test(document.getElementById("view").innerText), { timeout: 10000 }).catch(() => {});
+  const wrong = await viewer.evaluate(() => document.getElementById("view").innerText);
+  await viewer.type("#view input[type=password]", "media-pw");
+  await viewer.keyboard.press("Enter");
+  const unlocked = await playable();
+  check(/password-protected/.test(asked) && /doesn't fit/.test(wrong) && unlocked, "preview: an encrypted video asks for the password, refuses a wrong one, plays with the right one");
+
+  // Zips inside the zip: Open in the popup's file list, then extract it.
+  await page.reload();
+  await page.waitForSelector(".fl-open", { timeout: 8000 }).catch(() => {});
+  const opens = await page.evaluate(() => document.querySelectorAll(".fl-open").length);
+  check(opens === 2, `inner: the file list offers Open on the 2 zips inside (${opens})`);
+  const child = await send("openInner", { id: mj, path: "data.zip" });
+  const cr = await until(child.id, ["ready", "error"]);
+  check(cr?.phase === "ready" && cr.report.files === 3 && cr.report.inner.join() === "data.zip" && cr.parentId === mj, `inner: data.zip opens as its own job (${cr?.report?.files} files, "${cr?.output}")`, JSON.stringify(cr?.error));
+  await page.reload();
+  await sleep(600);
+  const header = await page.evaluate(() => document.getElementById("job-line").innerText);
+  check(/media\.zip › data\.zip/.test(header), `inner: the popup shows "${header.split("\n").join(" ")}" with the way back`);
+  await send("extract", { id: child.id, target: cr.target, output: cr.output, connections: 2 });
+  const cd = await until(child.id, ["done", "error"], 60000);
+  let bad = 0;
+  for (const [name, data] of Object.entries(media.innerFiles)) if ((await sha(`data/${name}`).catch(() => "")) !== sha256(data)) bad += 1;
+  check(cd?.phase === "done" && bad === 0, `inner: data.zip extracted through the outer zip (${cd?.result?.files} files, ${cd?.result?.requests} requests)`, JSON.stringify(cd?.error));
+  const child2 = await send("openInner", { id: mj, path: "packed.zip" });
+  const c2 = await until(child2.id, ["ready", "error"]);
+  check(c2?.error?.code === "inner_compressed", `inner: a deflated inner zip says it needs one pass (${c2?.error?.code})`);
+  let t0 = Date.now();
+  await send("extract", { id: child2.id, target: c2.target, output: c2.output, stream: true, connections: 1 });
+  const p2 = await untilRun(until, child2.id, t0, ["done", "error"], 60000);
+  bad = 0;
+  for (const [name, data] of Object.entries(media.innerFiles)) if ((await sha(`packed/${name}`).catch(() => "")) !== sha256(data)) bad += 1;
+  check(p2?.phase === "done" && p2.result.stream && bad === 0, "inner: the deflated one extracts in one pass", JSON.stringify(p2?.error));
+}
+
+/** Password zips and a server without Range support, through the extension. */
+async function checkPasswordsAndStream({ page, send, until, sha }) {
+  const files = { "secret/plan.txt": Buffer.from("the plan\n".repeat(1000)), "secret/photo.bin": bytesOf(51, 200_000) };
+  fs.writeFileSync(path.join(DATA, "locked.zip"), makeZip(Object.entries(files).map(([name, data]) => ({ name, data, encryption: "aes", password: "zip-pw" }))));
+  const { id: lj } = await send("inspect", { url: `${BASE}/locked.zip` });
+  const lr = await until(lj, ["ready", "error"]);
+  await page.reload();
+  await page.waitForSelector(".password-row", { timeout: 8000 }).catch(() => {});
+  const field = await page.evaluate(() => document.querySelector(".password-row label")?.textContent || "");
+  check(lr?.report?.encrypted === 2 && /password-protected/.test(field), `password: the popup asks for it before Start ("${field}")`);
+  let t0 = Date.now();
+  await send("extract", { id: lj, target: lr.target, output: lr.output, connections: 2 });
+  const none = await untilRun(until, lj, t0, ["done", "error"], 30000);
+  t0 = Date.now();
+  await send("extract", { id: lj, target: lr.target, output: lr.output, connections: 2, password: "Wr0ng-pw!" });
+  const wrong = await untilRun(until, lj, t0, ["done", "error"], 30000);
+  await page.reload();
+  await sleep(600);
+  const card = await page.evaluate(() => document.body.innerText);
+  check(none?.error?.code === "password_needed" && wrong?.error?.code === "password_wrong" && /doesn't fit/.test(card), `password: none and a wrong one are refused before anything is written (${none?.error?.code}, ${wrong?.error?.code})`);
+  const stored = await page.evaluate(() => chrome.storage.session.get(null).then((s) => JSON.stringify(s)));
+  check(!stored.includes("Wr0ng-pw!") && !stored.includes("zip-pw"), "password: never written to chrome.storage");
+  t0 = Date.now();
+  await send("extract", { id: lj, target: lr.target, output: lr.output, connections: 2, password: "zip-pw" });
+  const right = await untilRun(until, lj, t0, ["done", "error"], 30000);
+  let bad = 0;
+  for (const [name, data] of Object.entries(files)) if ((await sha(`locked/${name}`).catch(() => "")) !== sha256(data)) bad += 1;
+  check(right?.phase === "done" && bad === 0, "password: the right one extracts both files", JSON.stringify(right?.error));
+
+  // GitHub's kind of server: no Range, so one pass.
+  const smallManifest = JSON.parse(fs.readFileSync(path.join(DATA, "small.manifest.json"), "utf8"));
+  const { id: nj } = await send("inspect", { url: `${NORANGE}/small.zip` });
+  const nr = await until(nj, ["ready", "error"]);
+  await page.reload();
+  await sleep(600);
+  const offer = await page.evaluate(() => document.body.innerText);
+  check(nr?.error?.code === "no_range" && /Extract everything \(one pass\)/.test(offer), `stream: a server without Range offers one pass (${nr?.error?.code})`);
+  t0 = Date.now();
+  await send("extract", { id: nj, target: { key: "base", sub: "small-stream" }, output: "LinkUnzip > small-stream", stream: true, connections: 1 });
+  const nd = await untilRun(until, nj, t0, ["done", "error"], 120000);
+  bad = 0;
+  for (const f of smallManifest.files) if ((await sha(`small-stream/${f.name}`).catch(() => "")) !== f.sha256) bad += 1;
+  check(nd?.phase === "done" && nd.result.stream && bad === 0 && nd.result.listing_differs === 0, `stream: all ${smallManifest.files.length} files in one pass, SHA-256 right (${nd?.result?.requests} request)`, JSON.stringify(nd?.error));
+}
+
 function spawnSyncPy(code, arg) {
   const file = path.join(os.tmpdir(), "lu-preview-zip.py");
   fs.writeFileSync(file, code);
@@ -129,8 +328,12 @@ function spawnSyncPy(code, arg) {
 async function main() {
   previewZip(path.join(DATA, "preview.zip"));
   namesZip(path.join(DATA, "names.zip"));
-  bigZip(path.join(DATA, "big.zip"), 400);
+  if (!FEATURES_ONLY) bigZip(path.join(DATA, "big.zip"), 400);
+  media = mediaZip(path.join(DATA, "media.zip"));
+  if (!media) console.log("SKIP  preview: no ffmpeg to make test videos with");
   const server = spawn("python", [path.join(root, "tools", "range_server.py"), DATA, String(PORT)], { stdio: "ignore" });
+  const slow = spawn("python", [path.join(root, "tools", "range_server.py"), DATA, String(PORT + 1)], { stdio: "ignore", env: { ...process.env, MBPS: "3" } });
+  const norange = spawn("python", ["-m", "http.server", String(PORT + 2), "--bind", "127.0.0.1", "--directory", DATA], { stdio: "ignore" });
   await sleep(1200);
   const ext = testCopy();
   const DL = fs.mkdtempSync(path.join(os.tmpdir(), "lu-downloads-"));
@@ -200,8 +403,25 @@ async function main() {
         return out;
       }, sub);
 
+    // Chrome's download list: the files it holds back (in progress, waiting for Keep), the one
+    // entry each job keeps for "Open folder", and anything else (which shouldn't be there).
+    async function downloadList() {
+      const items = await page.evaluate(() => chrome.downloads.search({}));
+      const jobsNow = await page.evaluate(() => chrome.storage.session.get("jobs").then((s) => Object.values(s.jobs || {})));
+      const keeperIds = new Set(jobsNow.map((j) => j.keeper?.id).filter((x) => x != null));
+      const held = items.filter((d) => d.state === "in_progress").length;
+      const keepers = items.filter((d) => keeperIds.has(d.id) && d.state === "complete").length;
+      return { items, held, keepers, others: items.length - held - keepers };
+    }
+
     const ping = await send("ping");
     check(ping.ok && ping.info?.engine === "browser", `engine answers hello (features: ${ping.info?.features?.join(", ")})`);
+    if (FEATURES_ONLY) {
+      const viewer = await browser.newPage();
+      if (media) await checkMedia({ page, viewer, id, send, until, sha });
+      await checkPasswordsAndStream({ page, send, until, sha });
+      return;
+    }
 
     for (const kind of ONLY.length ? ONLY : ["small", "streamed", "many"]) {
       const manifest = JSON.parse(fs.readFileSync(path.join(DATA, `${kind}.manifest.json`), "utf8"));
@@ -219,9 +439,11 @@ async function main() {
       const r = done.result;
       check(r.verified_files === manifest.files.length, `${kind}: ${r.verified_files} files verified, ${r.requests} requests, ${(r.downloaded_bytes / 1048576).toFixed(1)} MB downloaded`);
       const sample = kind === "many" ? manifest.files.filter((_, i) => i % 700 === 0) : manifest.files;
+      // many.zip holds many/...: that folder's contents go straight into LinkUnzip > many.
+      const at = (name) => (kind === "many" ? name.replace(/^many\//, "") : name);
       let bad = 0;
-      for (const f of sample) if ((await sha(`${kind}/${f.name}`).catch(() => "")) !== f.sha256) bad += 1;
-      check(bad === 0, `${kind}: SHA-256 of ${sample.length} files match the manifest`);
+      for (const f of sample) if ((await sha(`${kind}/${at(f.name)}`).catch(() => "")) !== f.sha256) bad += 1;
+      check(bad === 0, `${kind}: SHA-256 of ${sample.length} files match the manifest${kind === "many" ? " (in many/, not many/many/)" : ""}`);
       if (kind !== "many") {
         const files = await listOut(kind);
         check(!files.some((f) => f.endsWith(".crswap")) && files.length === manifest.files.length, `${kind}: ${files.length} files in the folder, no temp files`);
@@ -280,6 +502,10 @@ async function main() {
     await sleep(800);
     const after = await viewer.evaluate(() => document.getElementById("name").textContent);
     check(after === "logo.svg" || after === "pic.png", `previous/next walk the folder (now ${after}, buttons ${nav})`);
+
+    // ---------------------------------------------------------------- streamed preview, inner zips
+    if (media) await checkMedia({ page, viewer, id, send, until, sha });
+    await checkPasswordsAndStream({ page, send, until, sha });
 
     // Site access: a job on a site without permission asks for it (the test copy has every site,
     // so check the background's answer with the permission removed for a moment is not possible;
@@ -457,11 +683,20 @@ async function main() {
     check(dbad === 0, `Downloads: all ${smallManifest.files.length} files in <Downloads>/small match the manifest's SHA-256`);
     const temps = walk(DL).filter((f) => /\.crdownload$|\.tmp$/i.test(f) || /^Unconfirmed/.test(path.basename(f)));
     check(temps.length === 0, `Downloads: no half-saved files left (${temps.length})`);
-    const history = await page.evaluate(() => chrome.downloads.search({}).then((x) => x.length));
-    check(history === 0, `Downloads: Chrome's download list stays clean (${history} entries)`);
+    // Chrome's download list keeps one entry per job: its least nested file, for "Open folder".
+    const keeperOf = await downloadList();
+    const kept = (await job(dj))?.keeper;
+    const keptItem = keeperOf.items.find((d) => d.id === kept?.id);
+    const shallowest = Math.min(...smallManifest.files.map((f) => f.name.split("/").length));
+    const keptRel = keptItem ? path.relative(path.join(DL, "small"), keptItem.filename).split(path.sep) : [];
+    check(
+      keeperOf.items.length === 1 && keptItem?.exists && keptRel.length === shallowest && kept.depth === shallowest,
+      `Downloads: Chrome's download list keeps just one entry, ${keptRel.join("/")} (depth ${kept?.depth}, the least nested), for Open folder`,
+      JSON.stringify({ kept, items: keeperOf.items.map((d) => d.filename) }),
+    );
     await sleep(400);
     const dview = await tb.evaluate(() => document.body.innerText);
-    check(/Open Downloads/.test(dview) && /Extracted 203 files/.test(dview), "Downloads: the Done screen offers Open Downloads");
+    check(/Open folder/.test(dview) && /Extracted 203 files/.test(dview), "Downloads: the Done screen offers Open folder");
 
     // Names Chrome's downloads refuse get a _ and are reported; extensions stay as they are; .dll
     // and .ini files are held back by Chrome until the user keeps them (said before and after).
@@ -482,8 +717,8 @@ async function main() {
     await sleep(400);
     const heldView = await tb.evaluate(() => document.body.innerText);
     check(/Chrome held back 2 files/.test(heldView) && /Keep them/.test(heldView), "Downloads: the Done screen lists them with Keep them");
-    const heldList = await page.evaluate(() => chrome.downloads.search({}).then((x) => x.map((d) => `${d.state}/${d.danger}`)));
-    check(heldList.length === 2 && heldList.every((x) => x === "in_progress/file"), `Downloads: only the 2 held files stay in Chrome's list, waiting for Keep (${heldList})`);
+    const heldList = await downloadList();
+    check(heldList.held === 2 && heldList.others === 0, `Downloads: besides each job's one entry, only the 2 held files stay in Chrome's list, waiting for Keep (${heldList.items.map((d) => `${d.state}/${d.danger}`)})`);
 
     // A big file: Chrome keeps it as a blob (on disk past its memory limit) until it's saved.
     const bigSha = JSON.parse(fs.readFileSync(path.join(DATA, "big.zip.json"), "utf8")).sha256;
@@ -492,8 +727,9 @@ async function main() {
     const tb0 = Date.now();
     await send("extract", { id: bj, target: br.target, output: br.output, connections: 4 });
     const bd = await until(bj, ["done", "error"], 600000);
-    const bigFile = path.join(DL, "big", "big", "big.bin");
-    check(bd?.phase === "done" && fs.existsSync(bigFile) && fileSha(bigFile) === bigSha, `Downloads: a 400 MB file arrives intact (${bd?.phase}, ${Date.now() - tb0} ms)`, JSON.stringify(bd?.error));
+    // big.zip holds big/big.bin: Downloads/big/big.bin, not Downloads/big/big/big.bin.
+    const bigFile = path.join(DL, "big", "big.bin");
+    check(bd?.phase === "done" && fs.existsSync(bigFile) && fileSha(bigFile) === bigSha, `Downloads: a 400 MB file arrives intact in Downloads/big (${bd?.phase}, ${Date.now() - tb0} ms)`, JSON.stringify(bd?.error));
 
     // Many files: the popup says it will be slow and offers a folder.
     const { id: mmj } = await send("inspect", { url: `${BASE}/many.zip` });
@@ -535,8 +771,8 @@ async function main() {
     await send("resume", { id: mmj });
     const mr = await until(mmj, ["done", "error"], 300000);
     check(mc?.phase === "cancelled" && doneBefore > 0 && mr?.phase === "done" && mr.result.skipped_existing >= doneBefore, `Downloads: stopped after ${doneBefore} files (worker stopped, engine page closed), Resume skipped ${mr?.result?.skipped_existing} and saved ${mr?.result?.files}`, JSON.stringify(mc?.error || mr?.error));
-    const history2 = await page.evaluate(() => chrome.downloads.search({}).then((x) => x.length));
-    check(history2 === 2, `Downloads: the download list is still clean after all that (${history2} entries: the 2 held files)`);
+    const history2 = await downloadList();
+    check(history2.held === 2 && history2.others === 0, `Downloads: the download list is still clean after all that (the 2 held files and ${history2.keepers} job entries for Open folder)`);
 
     // Catch .zip downloads: Chrome's own download is paused, not cancelled (a link may only work
     // once), and goes once LinkUnzip extracted the files. big.zip, so it is still running when
@@ -572,6 +808,12 @@ async function main() {
   } finally {
     await browser.close();
     server.kill();
+    slow.kill();
+    norange.kill();
+  }
+  if (FEATURES_ONLY) {
+    console.log(failures ? `\n${failures} FAILED` : "\nall passed");
+    process.exit(failures ? 1 : 0);
   }
 
   // Chrome set to "Ask where to save each file": LinkUnzip stops after the first file and says why.

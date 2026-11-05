@@ -5,7 +5,7 @@
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -44,6 +44,37 @@ pub struct ServerOptions {
     pub status: Option<u16>,
     /// The `Content-Type` of every file (none by default), e.g. `text/html` for a login page.
     pub content_type: Option<String>,
+    /// Which validators the server sends.
+    pub validators: Validators,
+    /// What the server does with `If-Range`.
+    pub if_range: IfRangeMode,
+    /// "The archive was replaced": from the Nth request for file data on (a range of more than
+    /// 1000 bytes outside the last 70 KB, so not the probe or the index read), serve `<name>.v2`
+    /// under the same name. With the validators of a second version, unless `same_validators`.
+    pub swap_at_data_request: Option<usize>,
+    pub same_validators: bool,
+}
+
+/// The validators a test server sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Validators {
+    /// `ETag: "v1"` and Last-Modified.
+    Strong,
+    /// `ETag: W/"v1"` only.
+    Weak,
+    LastModifiedOnly,
+    None,
+}
+
+/// What a test server does with `If-Range`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IfRangeMode {
+    /// A part only of the version the client names, else the whole file (as RFC 9110 says).
+    Honour,
+    /// A part whatever it names (GitHub's and Hugging Face's CDNs do this).
+    Ignore,
+    /// The whole file whenever If-Range is sent.
+    AlwaysFull,
 }
 
 impl Default for ServerOptions {
@@ -56,6 +87,10 @@ impl Default for ServerOptions {
             redirect_to: None,
             status: None,
             content_type: None,
+            validators: Validators::Strong,
+            if_range: IfRangeMode::Honour,
+            swap_at_data_request: None,
+            same_validators: false,
         }
     }
 }
@@ -69,6 +104,8 @@ pub struct RequestLog {
     pub faulted: bool,
     /// The `Cookie` request header, if the client sent one.
     pub cookie: Option<String>,
+    /// The `If-Range` request header, if the client sent one.
+    pub if_range: Option<String>,
 }
 
 struct Shared {
@@ -77,6 +114,8 @@ struct Shared {
     log: Mutex<Vec<RequestLog>>,
     faults_left: AtomicUsize,
     requests_seen: AtomicUsize,
+    data_requests: AtomicUsize,
+    swapped: AtomicBool,
 }
 
 pub struct TestServer {
@@ -94,6 +133,8 @@ impl TestServer {
             opts,
             log: Mutex::new(Vec::new()),
             requests_seen: AtomicUsize::new(0),
+            data_requests: AtomicUsize::new(0),
+            swapped: AtomicBool::new(false),
         });
         let (port_tx, port_rx) = std::sync::mpsc::channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -157,6 +198,7 @@ impl Drop for TestServer {
 }
 
 const LAST_MODIFIED: &str = "Fri, 01 Mar 2024 12:00:00 GMT";
+const LAST_MODIFIED_V2: &str = "Sat, 02 Mar 2024 12:00:00 GMT";
 
 fn status_only(code: StatusCode) -> Response {
     Response::builder()
@@ -194,6 +236,10 @@ async fn serve(
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let if_range = headers
+        .get(header::IF_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     if let Some(base) = &st.opts.redirect_to {
         st.log.lock().unwrap().push(RequestLog {
             path: name.clone(),
@@ -201,6 +247,7 @@ async fn serve(
             status: 302,
             faulted: false,
             cookie,
+            if_range: if_range.clone(),
         });
         return Response::builder()
             .status(StatusCode::FOUND)
@@ -215,6 +262,7 @@ async fn serve(
             status: code,
             faulted: false,
             cookie,
+            if_range: if_range.clone(),
         });
         return Response::builder()
             .status(code)
@@ -224,7 +272,7 @@ async fn serve(
             )))
             .unwrap();
     }
-    let path = st.root.join(&name);
+    let mut path = st.root.join(&name);
     let Ok(meta) = tokio::fs::metadata(&path).await else {
         st.log.lock().unwrap().push(RequestLog {
             path: name,
@@ -232,30 +280,81 @@ async fn serve(
             status: 404,
             faulted: false,
             cookie,
+            if_range: if_range.clone(),
         });
         return status_only(StatusCode::NOT_FOUND);
     };
     let total = meta.len();
-
-    let etag_version = match st.opts.change_etag_after {
-        Some(n) if seq > n => 2,
-        _ => 1,
-    };
-    let base = |status: StatusCode| {
-        Response::builder()
-            .status(status)
-            .header(header::ETAG, format!("\"v{etag_version}\""))
-            .header(header::LAST_MODIFIED, LAST_MODIFIED)
-    };
 
     let range_header = if st.opts.support_range {
         headers.get(header::RANGE).and_then(|v| v.to_str().ok())
     } else {
         None
     };
+    let parsed = range_header.and_then(|h| parse_range(h, total));
+
+    // The archive replaced by its second version (same length) from the Nth data request on.
+    if let (Some(n), Some((s, e))) = (st.opts.swap_at_data_request, parsed)
+        && e - s + 1 > 1000
+        && s + 70_000 < total
+        && st.data_requests.fetch_add(1, Ordering::SeqCst) + 1 >= n
+    {
+        st.swapped.store(true, Ordering::SeqCst);
+    }
+    let swapped = st.swapped.load(Ordering::SeqCst);
+    if swapped {
+        path = st.root.join(format!("{name}.v2"));
+    }
+
+    let changed = matches!(st.opts.change_etag_after, Some(n) if seq > n);
+    let version = if (swapped && !st.opts.same_validators) || changed {
+        2
+    } else {
+        1
+    };
+    let last_modified = if version == 1 {
+        LAST_MODIFIED
+    } else {
+        LAST_MODIFIED_V2
+    };
+    let etag = match st.opts.validators {
+        Validators::Strong => Some(format!("\"v{version}\"")),
+        Validators::Weak => Some(format!("W/\"v{version}\"")),
+        Validators::LastModifiedOnly | Validators::None => None,
+    };
+    let lm = matches!(
+        st.opts.validators,
+        Validators::Strong | Validators::LastModifiedOnly
+    )
+    .then_some(last_modified);
+    let base = |status: StatusCode| {
+        let mut b = Response::builder().status(status);
+        if let Some(e) = &etag {
+            b = b.header(header::ETAG, e);
+        }
+        if let Some(l) = lm {
+            b = b.header(header::LAST_MODIFIED, l);
+        }
+        b
+    };
+
+    // If-Range: a part only of the version the client names (a weak ETag never matches).
+    let named_current = if_range.as_deref().is_some_and(|v| {
+        etag.as_deref()
+            .is_some_and(|e| !e.starts_with("W/") && v == e)
+            || lm == Some(v)
+    });
+    let whole = if_range.is_some()
+        && match st.opts.if_range {
+            IfRangeMode::Honour => !named_current,
+            IfRangeMode::Ignore => false,
+            IfRangeMode::AlwaysFull => true,
+        };
+
     let (status, start, end) = match range_header {
         None => (StatusCode::OK, 0, total.saturating_sub(1)),
-        Some(h) => match parse_range(h, total) {
+        Some(_) if whole => (StatusCode::OK, 0, total.saturating_sub(1)),
+        Some(_) => match parsed {
             Some((s, e)) => (StatusCode::PARTIAL_CONTENT, s, e),
             None => {
                 st.log.lock().unwrap().push(RequestLog {
@@ -264,6 +363,7 @@ async fn serve(
                     status: 416,
                     faulted: false,
                     cookie,
+                    if_range: if_range.clone(),
                 });
                 return base(StatusCode::RANGE_NOT_SATISFIABLE)
                     .header(header::CONTENT_RANGE, format!("bytes */{total}"))
@@ -293,6 +393,7 @@ async fn serve(
         status: status.as_u16(),
         faulted: cut_after.is_some(),
         cookie,
+        if_range: if_range.clone(),
     });
 
     let mut file = tokio::fs::File::open(&path).await.unwrap();

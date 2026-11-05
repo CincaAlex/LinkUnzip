@@ -257,12 +257,21 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
         name,
         st.query ? h("span", { class: "fl-path" }, parentOf(item.path)) : null,
         item.unsupported ? h("span", { class: "fl-tag", title: "LinkUnzip can't extract this file" }, item.unsupported) : null,
+        item.locked ? h("span", { class: "fl-tag quiet", title: "Password-protected: LinkUnzip asks for the password before it extracts" }, "password") : null,
       ),
       h("span", { class: "fl-size" }, size),
-      !item.dir && features.preview && !item.unsupported
-        ? h("button", { type: "button", class: "fl-peek", tabindex: "-1", title: `Preview ${item.name}`, "aria-label": `Preview ${item.name}`, onclick: () => api.preview(item.path) })
-        : null,
+      rowAction(item),
     );
+  }
+
+  /** The button at the end of a file row: Open for a zip inside the zip, else Preview. */
+  function rowAction(item) {
+    if (item.dir || item.unsupported) return null;
+    if (features.inner && /\.zip$/i.test(item.name)) {
+      return h("button", { type: "button", class: "fl-open", tabindex: "-1", title: `Open ${item.name}: its own file list`, "aria-label": `Open ${item.name}`, onclick: () => api.open(item.path) });
+    }
+    if (!features.preview) return null;
+    return h("button", { type: "button", class: "fl-peek", tabindex: "-1", title: `Preview ${item.name}`, "aria-label": `Preview ${item.name}`, onclick: () => api.preview(item.path) });
   }
 
   /** Update the ticks in place (no rebuild: focus and scroll stay where they are). */

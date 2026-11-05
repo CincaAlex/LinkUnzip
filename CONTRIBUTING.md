@@ -62,6 +62,10 @@ node tools\e2e\extension.mjs        # --stubs-only for the quick part without lo
 
 It needs about 1 GB of demo data and a real helper install, so it runs locally rather than in CI.
 
+`tools/e2e/helper.mjs` checks Settings > Extract with the Windows helper with the helper you just
+built (`cargo build`), without installing it: the extension reaches it through a small local
+bridge. `OLD_HELPER_EXE=<an older linkunzip.exe>` also checks the "too old" path.
+
 ## Package and release
 
 ```powershell

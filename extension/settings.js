@@ -8,6 +8,7 @@ export const DEFAULT_SETTINGS = {
   loginWhenNeeded: true, // offer "Use my login on <host>" when a download needs the user's login
   loginEverywhere: false, // send the browser's cookies to every zip site without asking per site
   catchDownloads: false, // intercept .zip downloads and offer to extract instead
+  useHelper: false, // extract with the Windows helper, when it is installed and can do the job
   theme: "system", // "system" follows Windows; "light" or "dark" is the user's choice
 };
 

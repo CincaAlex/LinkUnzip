@@ -367,6 +367,7 @@ mod tests {
         let sel = Selection {
             paths: vec!["docs/".into(), "readme.txt".into()],
             exclude: vec!["docs/sub/".into()],
+            marks: None,
         };
         let m = t.measure(&Filter::with_selection(&[], Some(&sel)).unwrap());
         assert_eq!(

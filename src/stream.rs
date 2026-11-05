@@ -35,7 +35,7 @@ use crate::extract::{
 };
 use crate::fmt::human_bytes;
 use crate::http::{Download, Sequential};
-use crate::plan::{Filter, unsupported_message};
+use crate::plan::{self, Filter, unsupported_message};
 use crate::resume;
 use crate::safety;
 use crate::stats::Stats;
@@ -522,6 +522,9 @@ struct State {
     /// Files that were already in the folder, identical (resume), and their size.
     skipped: u64,
     skipped_bytes: u64,
+    /// The zip's own top folder to leave out (`ExtractOptions::drop_top`), decided on the first
+    /// entry since the rest hasn't come yet; `Some(None)` = keep every path as it is.
+    top: Option<Option<String>>,
 }
 
 pub fn run(opts: &ExtractOptions) -> Result<Summary> {
@@ -715,6 +718,21 @@ fn entry<R: Read>(
     let header = parse_header(&fixed, &name, &extra).map_err(Failure::fatal)?;
     let name = header.entry.name.clone();
 
+    // An entry that turns out to be outside the top folder keeps its whole path.
+    let top = plan::top_of(&name, header.entry.is_dir());
+    if st.top.is_none() {
+        let folder = ctx
+            .opts
+            .output
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned());
+        st.top = Some(top.clone().filter(|t| {
+            ctx.opts.drop_top
+                && folder.as_deref().is_some_and(|f| plan::same_folder(t, f))
+                && !plan::holds_only(&ctx.opts.output, t)
+        }));
+    }
+
     if !ctx.filter.matches(&name) {
         return discard(ctx, input, &header, buf);
     }
@@ -730,8 +748,18 @@ fn entry<R: Read>(
             .with_message(unsupported_message(&[(name.clone(), reason)])),
         ));
     }
-    let safe = safety::sanitize_entry_name(&name)
+    let mut safe = safety::sanitize_entry_name(&name)
         .map_err(|reason| Failure::fatal(anyhow!("{name:?}: unsafe path, {reason}")))?;
+    if let Some(Some(dropped)) = &st.top
+        && top.as_deref() == Some(dropped.as_str())
+    {
+        if safe.path.components().count() == 1 {
+            return discard(ctx, input, &header, buf); // the top folder itself
+        }
+        let (path, renamed) = plan::without_top(&safe.path);
+        safe.path = path;
+        safe.changed |= renamed;
+    }
     let key = safe.path.to_string_lossy().to_lowercase();
     if safe.changed && !st.renames.iter().any(|(from, _)| *from == name) {
         st.renames

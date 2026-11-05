@@ -1,4 +1,8 @@
 //! The HTTP side: probe the server for Range support, then fetch byte ranges.
+//!
+//! Every range request after the probe also says which version of the file it wants (`If-Range`,
+//! with a strong ETag or else Last-Modified), so a server whose file changed answers with the new
+//! file instead of a part of it. The probe checks once that the server honours it.
 
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,7 +12,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{
     ACCEPT_ENCODING, AUTHORIZATION, CONTENT_RANGE, CONTENT_TYPE, COOKIE, ETAG, HeaderMap,
-    HeaderName, HeaderValue, LAST_MODIFIED, RANGE,
+    HeaderName, HeaderValue, IF_RANGE, LAST_MODIFIED, RANGE,
 };
 use reqwest::{StatusCode, Url};
 
@@ -64,6 +68,8 @@ pub struct Source {
     pub size: u64,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    /// The validator sent as `If-Range` with every range request, if the server honours it.
+    pub if_range: Option<String>,
     pub retry: RetryPolicy,
     /// Bytes received by the probe and by [`Source::get_bytes`] (the index reads).
     index_bytes: AtomicU64,
@@ -133,16 +139,46 @@ impl Source {
             Some((_, _, Some(total))) => total,
             _ => bail!("could not read the total file size from Content-Range: {content_range:?}"),
         };
-        Ok(Source {
+        let mut src = Source {
             client,
             url: url.to_string(),
             size,
             etag: header_str(resp.headers(), ETAG.as_str()),
             last_modified: header_str(resp.headers(), LAST_MODIFIED.as_str()),
+            if_range: None,
             retry: retry_policy,
             index_bytes: AtomicU64::new(sample.len() as u64),
             index_requests: AtomicU64::new(1),
-        })
+        };
+        src.check_if_range();
+        Ok(src)
+    }
+
+    /// Ask for the first byte again with `If-Range`: a server that honours it answers 206. One
+    /// that answers 200 (some CDNs, or a Last-Modified it counts as weak) would send the whole
+    /// file on every request, so If-Range stays off there and the checks after each answer do the
+    /// work. A server that ignores If-Range also answers 206; sending it there is harmless.
+    fn check_if_range(&mut self) {
+        let Some(value) = if_range_value(self.etag.as_deref(), self.last_modified.as_deref())
+        else {
+            return;
+        };
+        self.index_requests.fetch_add(1, Ordering::Relaxed);
+        let resp = self
+            .client
+            .get(&self.url)
+            .header(RANGE, "bytes=0-0")
+            .header(IF_RANGE, &value)
+            .header(ACCEPT_ENCODING, "identity")
+            .send();
+        // A 200 is dropped unread: that closes the connection instead of downloading the file.
+        if let Ok(resp) = resp
+            && resp.status() == StatusCode::PARTIAL_CONTENT
+        {
+            let got = resp.bytes().map_or(0, |b| b.len() as u64);
+            self.index_bytes.fetch_add(got, Ordering::Relaxed);
+            self.if_range = Some(value);
+        }
     }
 
     pub fn url(&self) -> &str {
@@ -162,13 +198,16 @@ impl Source {
     /// Start a streaming GET for `bytes=start-end` (inclusive). The returned response is a
     /// `Read`; the caller decides how much to consume. Validates status, `Content-Range` and ETag.
     pub fn open_range(&self, start: u64, end: u64) -> Result<Response, Failure> {
-        let resp = self
+        let mut req = self
             .client
             .get(&self.url)
             .header(RANGE, format!("bytes={start}-{end}"))
-            .header(ACCEPT_ENCODING, "identity") // never let a server compress the byte stream
-            .send()
-            .map_err(classify_request_error)?;
+            .header(ACCEPT_ENCODING, "identity"); // never let a server compress the byte stream
+        if let Some(value) = &self.if_range {
+            req = req.header(IF_RANGE, value);
+        }
+        // On a failed check the response is dropped unread, which closes the connection.
+        let resp = req.send().map_err(classify_request_error)?;
         self.check_range_response(&resp, start)?;
         Ok(resp)
     }
@@ -201,6 +240,11 @@ impl Source {
         let status = resp.status();
         match status {
             StatusCode::PARTIAL_CONTENT => {}
+            StatusCode::OK if self.if_range.is_some() => {
+                return Err(Failure::fatal(anyhow!(
+                    "the file changed on the server since LinkUnzip read its index (the server sent the new file instead of the part asked for)"
+                )));
+            }
             StatusCode::OK => {
                 return Err(Failure::fatal(anyhow!(
                     "the server ignored the Range header and answered 200 OK (it stopped supporting ranges, or the file changed)"
@@ -235,8 +279,8 @@ impl Source {
                     "the file changed on the server during the download (ETag changed)"
                 )));
             }
-        } else if let (None, Some(old), Some(new)) = (
-            &self.etag,
+        // Last-Modified decides whenever the ETags couldn't be compared (none at first, or none now).
+        } else if let (Some(old), Some(new)) = (
             &self.last_modified,
             header_str(resp.headers(), LAST_MODIFIED.as_str()),
         ) && *old != new
@@ -431,6 +475,16 @@ fn normalize_etag(etag: &str) -> &str {
     etag.trim().trim_start_matches("W/")
 }
 
+/// The validator `If-Range` may carry: a strong ETag, else Last-Modified, else none. Never a weak
+/// ETag: a server must then always send the whole file.
+fn if_range_value(etag: Option<&str>, last_modified: Option<&str>) -> Option<String> {
+    match etag.map(str::trim) {
+        Some(e) if e.starts_with("W/") => None,
+        Some(e) => Some(e.to_string()),
+        None => last_modified.map(str::to_string),
+    }
+}
+
 /// Parse `bytes 0-0/12345` into (start, end, total). `total` is `None` for `bytes 0-0/*`.
 pub fn parse_content_range(value: &str) -> Option<(u64, u64, Option<u64>)> {
     let rest = value.trim().strip_prefix("bytes")?.trim_start();
@@ -471,6 +525,22 @@ mod tests {
     fn etag_normalisation() {
         assert_eq!(normalize_etag("W/\"abc\""), "\"abc\"");
         assert_eq!(normalize_etag("\"abc\""), "\"abc\"");
+    }
+
+    #[test]
+    fn if_range_takes_a_strong_etag_else_last_modified() {
+        let lm = Some("Fri, 01 Mar 2024 12:00:00 GMT");
+        assert_eq!(
+            if_range_value(Some(" \"v1\" "), lm).as_deref(),
+            Some("\"v1\"")
+        );
+        assert_eq!(
+            if_range_value(Some("W/\"v1\""), lm),
+            None,
+            "never a weak ETag"
+        );
+        assert_eq!(if_range_value(None, lm).as_deref(), lm);
+        assert_eq!(if_range_value(None, None), None);
     }
 
     #[test]

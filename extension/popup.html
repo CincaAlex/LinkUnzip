@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LinkUnzip</title>
     <script src="theme.js"></script>
+    <link rel="stylesheet" href="vendor/geist/geist.css" />
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
@@ -103,6 +104,13 @@
           <span>
             Catch .zip downloads
             <small>Stops Chrome from saving a .zip and shows what LinkUnzip would do instead.</small>
+          </span>
+        </label>
+        <label class="check" id="set-helper-row" hidden>
+          <input id="set-helper" type="checkbox" />
+          <span>
+            Extract with the Windows helper
+            <small id="set-helper-note"></small>
           </span>
         </label>
       </div>

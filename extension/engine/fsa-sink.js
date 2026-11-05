@@ -34,7 +34,7 @@ function fsError(e, what) {
  * A sink over `root` (a FileSystemDirectoryHandle with write permission). `label` is what the
  * popup shows for the folder.
  */
-export function folderSink(root, label) {
+export function folderSink(root, label, folder = null) {
   const dirs = new Map([["", root]]);
   const renames = [];
 
@@ -142,6 +142,18 @@ export function folderSink(root, label) {
   return {
     label,
     renames,
+    folder,
+
+    /** Does the folder hold nothing but the folder `name` (the zip's own top folder)? */
+    async holdsOnly(name) {
+      const names = [];
+      for await (const [n, handle] of root.entries()) {
+        if (n === JOURNAL_NAME) continue;
+        names.push([n, handle.kind]);
+        if (names.length > 1) return false;
+      }
+      return names.length === 1 && names[0][1] === "directory" && names[0][0].toLowerCase() === name.toLowerCase();
+    },
 
     /**
      * Start the journal, or carry on with the one an earlier, unfinished run of this same archive
