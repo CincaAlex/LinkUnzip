@@ -22,6 +22,7 @@ import { REVIEW_URL, UNINSTALL_URL, rateCheck } from "./config.js";
 import { folderLabel, getFolder, removeFolder } from "./folder.js";
 import { fileNameFromUrl, folderNameFor, humanBytes, joinPath, sitePattern } from "./fmt.js";
 import { dropPreview, handlePreviewFetch, previewStats, registerPreview } from "./preview.js";
+import { currentLanguage, loadLanguage, t, tn } from "./i18n.js";
 import { engineFor } from "./route.js";
 import { loadSettings, migrate } from "./settings.js";
 import { indexCache, savedCount } from "./store.js";
@@ -50,7 +51,17 @@ const ready = restore();
 // State
 // ---------------------------------------------------------------------------------------
 
+// Notifications, the right-click entry and the messages kept with a job speak the popup's language.
+async function useLanguage() {
+  await loadLanguage((await loadSettings()).language);
+  chrome.contextMenus.update(MENU_ID, { title: t("Extract with LinkUnzip") }).catch?.(() => {});
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.settings && changes.settings.newValue?.language !== changes.settings.oldValue?.language) useLanguage();
+});
+
 async function restore() {
+  await useLanguage().catch(() => {});
   const { jobs: saved = {}, hostInfo: savedInfo = null, current = null } = await chrome.storage.session.get(["jobs", "hostInfo", "current"]);
   currentId = current;
   const restartedAt = Date.now();
@@ -60,7 +71,7 @@ async function restore() {
     if ((job.phase === "inspecting" || job.phase === "extracting") && job.via === "helper") {
       job.failedWhile = job.phase === "extracting" ? "extract" : "inspect";
       job.phase = "error";
-      job.error = { code: "host", message: "LinkUnzip was interrupted." };
+      job.error = { code: "host", message: t("LinkUnzip was interrupted.") };
     }
     jobs.set(id, job);
   }
@@ -71,7 +82,7 @@ async function restore() {
   setTimeout(() => {
     for (const job of jobs.values()) {
       if (running(job) && job.via !== "helper" && !(job.startedAt > restartedAt) && !(job.seenAt > restartedAt)) {
-        fail(job, { code: "host", message: "LinkUnzip was interrupted." });
+        fail(job, { code: "host", message: t("LinkUnzip was interrupted.") });
       }
     }
     persist();
@@ -151,7 +162,7 @@ chrome.runtime.onConnect.addListener((p) => {
     if (enginePort !== p) return; // an older connection, already replaced
     enginePort = null;
     engineInfo = null;
-    const error = { code: "host", message: "LinkUnzip's engine stopped (the browser closed it). Try again." };
+    const error = { code: "host", message: t("LinkUnzip's engine stopped (the browser closed it). Try again.") };
     for (const job of jobs.values()) if (running(job) && job.via !== "helper") fail(job, error);
     for (const w of [...waiters]) if (w.via === "engine") w.finish({ type: "error", ...error });
     persist();
@@ -246,12 +257,12 @@ function onEngineMessage(msg) {
 function friendlyHostError(raw) {
   const text = raw || "";
   if (/not found/i.test(text)) {
-    return { code: "host_missing", message: "The LinkUnzip helper isn't installed on this PC.", detail: text };
+    return { code: "host_missing", message: t("The LinkUnzip helper isn't installed on this PC."), detail: text };
   }
   if (/forbidden/i.test(text)) {
-    return { code: "host_forbidden", message: "The LinkUnzip helper on this PC doesn't accept this copy of the extension. Install the helper again.", detail: text };
+    return { code: "host_forbidden", message: t("The LinkUnzip helper on this PC doesn't accept this copy of the extension. Install the helper again."), detail: text };
   }
-  return { code: "host", message: text || "The connection to the LinkUnzip helper was lost.", detail: text };
+  return { code: "host", message: t("The connection to the LinkUnzip helper was lost."), detail: text };
 }
 
 function connect() {
@@ -349,12 +360,12 @@ function ask(message, match, timeoutMs = 20_000, via = "engine") {
       resolve(reply);
     };
     if (timeoutMs) {
-      w.timer = setTimeout(() => w.finish({ type: "error", code: "timeout", message: "LinkUnzip didn't answer in time." }), timeoutMs);
+      w.timer = setTimeout(() => w.finish({ type: "error", code: "timeout", message: t("LinkUnzip didn't answer in time.") }), timeoutMs);
     }
     waiters.add(w);
     const sent = via === "helper" ? Promise.resolve(sendToHost(message)) : toEngine(message);
     sent.then((ok) => {
-      if (!ok) w.finish({ type: "error", ...(via === "helper" ? hostError || friendlyHostError("") : { code: "host", message: "LinkUnzip's engine didn't start." }) });
+      if (!ok) w.finish({ type: "error", ...(via === "helper" ? hostError || friendlyHostError("") : { code: "host", message: t("LinkUnzip's engine didn't start.") }) });
     });
   });
 }
@@ -524,8 +535,8 @@ function notifyDone(job) {
   chrome.notifications.create(`done:${job.id}`, {
     type: "basic",
     iconUrl: "icons/icon128.png",
-    title: `Extracted ${r.files.toLocaleString()} files`,
-    message: `${humanBytes(r.extracted_bytes)} written to ${r.output}\nZip stored on disk: ${humanBytes(r.zip_bytes_on_disk)}`,
+    title: tn("Extracted {count} file", "Extracted {count} files", r.files),
+    message: `${t("{size} written to {folder}", { size: humanBytes(r.extracted_bytes), folder: r.output })}\n${t("Zip stored on disk:")} ${humanBytes(r.zip_bytes_on_disk)}`,
     priority: 1,
   });
 }
@@ -720,7 +731,7 @@ async function defaultTarget(name) {
   const { saveTo } = await getSettings();
   const base = saveTo === "folder" ? await getFolder("base") : null;
   if (base) return { target: { key: "base", sub }, output: folderLabel(base.name, sub) };
-  return { target: { key: "downloads", sub }, output: folderLabel("Downloads", sub) };
+  return { target: { key: "downloads", sub }, output: folderLabel(t("Downloads"), sub) };
 }
 
 /** Start looking at a URL: creates the job and asks the engine to read the zip's index. */
@@ -735,7 +746,7 @@ async function startInspect({ url, pageUrl = "" }) {
   if (!/^https?:\/\//i.test(url)) {
     fail(job, {
       code: "unsupported_url",
-      message: "LinkUnzip can only read http:// and https:// links. Downloads that live inside the page (blob: links, like WhatsApp Web) cannot be fetched again.",
+      message: t("LinkUnzip can only read http:// and https:// links. Downloads that live inside the page (blob: links, like WhatsApp Web) cannot be fetched again."),
     });
     persist();
     return job;
@@ -752,13 +763,13 @@ async function sendInspect(job) {
   job.via = "engine";
   persist();
   if (!(await siteAllowed(job.url))) {
-    fail(job, { code: "site_access", message: "LinkUnzip needs your permission to read files from this site." });
+    fail(job, { code: "site_access", message: t("LinkUnzip needs your permission to read files from this site.") });
     persist();
     return;
   }
   const credentials = await credentialsFor(job);
   if (!(await toEngine({ type: "inspect", id: job.id, url: job.url, inner: job.inner, credentials }))) {
-    fail(job, { code: "host", message: "LinkUnzip's engine didn't start." });
+    fail(job, { code: "host", message: t("LinkUnzip's engine didn't start.") });
   }
   persist();
 }
@@ -770,7 +781,7 @@ async function sendInspect(job) {
 async function openInner({ id, path }) {
   await ready;
   const parent = jobs.get(id);
-  if (!parent) return { ok: false, error: "That job no longer exists." };
+  if (!parent) return { ok: false, error: t("That zip is no longer open in LinkUnzip.") };
   const inner = [...(parent.inner || []), path];
   const name = path.slice(path.lastIndexOf("/") + 1);
   const child = { id: `${parent.id}-${Date.now().toString(36)}`, url: parent.url, pageUrl: parent.pageUrl, name, inner, parentId: parent.id, outerName: parent.name, phase: "inspecting", createdAt: Date.now(), ...(await defaultTarget(name)) };
@@ -785,7 +796,7 @@ async function openInner({ id, path }) {
 async function startExtract({ id, output, target, include = [], select, connections, force = false, stream = false, resume, password }) {
   await ready;
   const job = jobs.get(id);
-  if (!job) return { ok: false, error: "That job no longer exists." };
+  if (!job) return { ok: false, error: t("That zip is no longer open in LinkUnzip.") };
   const settings = await getSettings();
   // Never stored with the job: the password stays in this worker's memory.
   if (password) passwords.set(id, password);
@@ -795,7 +806,7 @@ async function startExtract({ id, output, target, include = [], select, connecti
   job.progress = null;
   job.error = null;
 
-  if (!target) return { ok: false, error: "Choose a folder to extract into." };
+  if (!target) return { ok: false, error: t("Choose a folder to extract into.") };
   if (target.key === "helper") return startWithHelper(job, { target, include, select, connections, force, stream, settings });
   job.via = "engine";
   job.target = target;
@@ -806,7 +817,7 @@ async function startExtract({ id, output, target, include = [], select, connecti
     id: `${id}:x`,
     url: job.url,
     inner: job.inner,
-    target,
+    target: { ...target, language: currentLanguage() },
     include: include.filter(Boolean),
     select,
     resume,
@@ -817,7 +828,7 @@ async function startExtract({ id, output, target, include = [], select, connecti
     force,
     credentials: await credentialsFor(job),
   });
-  if (!ok) fail(job, { code: "host", message: "LinkUnzip's engine didn't start." });
+  if (!ok) fail(job, { code: "host", message: t("LinkUnzip's engine didn't start.") });
   persist();
   return { ok };
 }
@@ -833,7 +844,7 @@ async function startWithHelper(job, { target, include, select, connections, forc
   if (route.via !== "helper") {
     job.phase = job.report ? "ready" : job.phase;
     persist();
-    return { ok: false, error: `The Windows helper can't extract this one: ${route.why}. Turn it off in Settings to extract in the browser.` };
+    return { ok: false, error: t("The Windows helper can't extract this one: {reason}. Turn it off in Settings to extract in the browser.", { reason: t(route.why, route.vars) }) };
   }
   const path = joinPath(helper.downloads_dir, target.sub || folderNameFor(job.name));
   job.via = "helper";
@@ -911,7 +922,7 @@ const commands = {
     await ensureEngine().catch(() => false);
     // The helper is optional: only asked so the popup can offer "Open folder" for its jobs.
     ensureHost().then(() => persist());
-    return { ok: Boolean(engineInfo), info: engineInfo, helper: hostInfo, error: engineInfo ? null : { code: "host", message: "LinkUnzip's engine didn't start." } };
+    return { ok: Boolean(engineInfo), info: engineInfo, helper: hostInfo, error: engineInfo ? null : { code: "host", message: t("LinkUnzip's engine didn't start.") } };
   },
   async inspect(m) {
     const job = await startInspect(m);
@@ -949,7 +960,7 @@ const commands = {
     if (!job) return { ok: false };
     const sub = folderNameFor(job.name);
     job.target = { key: "downloads", sub };
-    job.output = folderLabel("Downloads", sub);
+    job.output = folderLabel(t("Downloads"), sub);
     job.ownTarget = true;
     persist();
     return { ok: true, target: job.target, output: job.output };
@@ -983,26 +994,26 @@ const commands = {
   },
   async list({ id, dir = "", offset = 0, limit = 500 }) {
     const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: "That job no longer exists." } };
+    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
     const r = await askAboutJob(job, { type: "list", id, dir, offset, limit }, (m) => m.type === "listing" && m.dir === dir && m.offset === offset);
     return r.type === "listing" ? { ok: true, listing: r } : { ok: false, error: r };
   },
   async search({ id, query, limit = 200 }) {
     const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: "That job no longer exists." } };
+    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
     const r = await askAboutJob(job, { type: "search", id, query, limit }, (m) => m.type === "search_results" && m.query === query);
     return r.type === "search_results" ? { ok: true, results: r } : { ok: false, error: r };
   },
   async measure({ id, select }) {
     const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: "That job no longer exists." } };
+    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
     const r = await askAboutJob(job, { type: "measure", id, select }, (m) => m.type === "measured");
     return r.type === "measured" ? { ok: true, measured: r } : { ok: false, error: r };
   },
   // The viewer: where one file sits in the zip, so it can fetch and show it itself.
   async entry({ id, path }) {
     const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: "That zip is no longer open in LinkUnzip." } };
+    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
     const r = await askAboutJob(job, { type: "entry", id, path }, (m) => m.type === "entry" && m.path === path);
     if (r.type !== "entry") return { ok: false, error: r };
     // An encrypted file opens with the password given for this zip, if there is one.
@@ -1029,14 +1040,14 @@ const commands = {
   // The viewer's Previous / Next.
   async neighbors({ id, path }) {
     const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: "That zip is no longer open in LinkUnzip." } };
+    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
     const r = await askAboutJob(job, { type: "neighbors", id, path }, (m) => m.type === "neighbors" && m.path === path);
     return r.type === "neighbors" ? { ok: true, prev: r.prev, next: r.next, position: r.position, total: r.total } : { ok: false, error: r };
   },
   // "Select all results" in the file list.
   async tickMatches({ id, marks, query, ticked }) {
     const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: "That job no longer exists." } };
+    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
     const r = await askAboutJob(job, { type: "tick_matches", id, marks, query, ticked }, (m) => m.type === "ticked" && m.query === query);
     return r.type === "ticked" ? { ok: true, marks: r.marks, matched: r.matched } : { ok: false, error: r };
   },
@@ -1106,7 +1117,7 @@ const commands = {
   async retry({ id }) {
     await ready;
     const job = jobs.get(id);
-    if (!job) return { ok: false, error: "That job no longer exists." };
+    if (!job) return { ok: false, error: t("That zip is no longer open in LinkUnzip.") };
     return retry(job);
   },
   // A stopped or failed extraction, again with the same link, folder, selection and filter: the
@@ -1114,7 +1125,7 @@ const commands = {
   async resume({ id }) {
     await ready;
     const job = jobs.get(id);
-    if (!job?.lastExtract) return { ok: false, error: "There is nothing to resume." };
+    if (!job?.lastExtract) return { ok: false, error: t("There is nothing to resume.") };
     return startExtract({ ...job.lastExtract, resume: true });
   },
   // Sent just before the popup shows Chrome's permission prompt, and again with the answer.
@@ -1161,7 +1172,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 // ---------------------------------------------------------------------------------------
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
-  chrome.contextMenus.create({ id: MENU_ID, title: "Extract with LinkUnzip", contexts: ["link"] });
+  await useLanguage().catch(() => {});
+  chrome.contextMenus.create({ id: MENU_ID, title: t("Extract with LinkUnzip"), contexts: ["link"] });
   // On install and on every update, so the version in the address stays current.
   chrome.runtime.setUninstallURL(`${UNINSTALL_URL}?v=${chrome.runtime.getManifest().version}`);
   // First install: the welcome page asks for site access and the folder.

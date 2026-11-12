@@ -219,49 +219,61 @@ export function folderSink(root, label, folder = null) {
       }
     },
 
+    // The file is only opened once BUFFER bytes have come, or when it is complete: a smaller file
+    // is then written in one go by close(), which runs while the next files stream in (`finish`
+    // in extract.js). Most files in a big zip are small, so the browser's round trips for
+    // opening, writing and closing them no longer hold up the download.
     async create(parts) {
       const what = parts.join("/");
-      let writable;
-      try {
-        const handle = await fileHandle(parts, true);
-        writable = await handle.createWritable({ keepExistingData: false });
-      } catch (e) {
-        throw e instanceof Coded ? e : fsError(e, what);
-      }
-      let buf = new Uint8Array(BUFFER);
+      let writable = null;
+      let pending = [];
       let used = 0;
+      const open = async () => {
+        try {
+          const handle = await fileHandle(parts, true);
+          writable = await handle.createWritable({ keepExistingData: false });
+        } catch (e) {
+          throw e instanceof Coded ? e : fsError(e, what);
+        }
+      };
       const flush = async () => {
+        if (!writable) await open();
         if (!used) return;
-        const out = buf.subarray(0, used);
-        buf = new Uint8Array(BUFFER);
+        let out = pending[0];
+        if (pending.length > 1) {
+          out = new Uint8Array(used);
+          let at = 0;
+          for (const p of pending) {
+            out.set(p, at);
+            at += p.length;
+          }
+        }
+        pending = [];
         used = 0;
-        await writable.write(out);
+        try {
+          await writable.write(out);
+        } catch (e) {
+          throw fsError(e, what);
+        }
       };
       return {
         async write(chunk) {
-          try {
-            if (chunk.length >= BUFFER) {
-              await flush();
-              await writable.write(chunk.slice());
-              return;
-            }
-            if (used + chunk.length > BUFFER) await flush();
-            buf.set(chunk, used);
-            used += chunk.length;
-          } catch (e) {
-            throw fsError(e, what);
-          }
+          // A copy: the chunk's buffer may be reused for the next one.
+          pending.push(chunk.slice());
+          used += chunk.length;
+          if (used >= BUFFER) await flush();
         },
         async close() {
+          await flush();
           try {
-            await flush();
             await writable.close();
           } catch (e) {
             throw fsError(e, what);
           }
         },
         async abort() {
-          await writable.abort().catch(() => {});
+          pending = [];
+          await writable?.abort().catch(() => {});
         },
       };
     },

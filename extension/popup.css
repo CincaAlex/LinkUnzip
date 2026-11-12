@@ -513,6 +513,9 @@ body.fill .fl {
 }
 .fl-head h2 {
   margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .fl-head h2 span {
@@ -863,6 +866,26 @@ details.advanced[open] > summary {
 .field.inline {
   grid-template-columns: 1fr 80px;
   align-items: center;
+}
+.field.inline.lang {
+  grid-template-columns: 1fr auto;
+}
+select {
+  height: 34px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: 13px var(--sans);
+}
+select:hover {
+  border-color: var(--border-strong);
+}
+select:focus {
+  outline: none;
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 input[type="text"],

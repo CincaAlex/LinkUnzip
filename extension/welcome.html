@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Set up LinkUnzip</title>
+    <title data-i18n>Set up LinkUnzip</title>
     <link rel="icon" href="icons/icon32.png" />
     <script src="theme.js"></script>
     <link rel="stylesheet" href="vendor/geist/geist.css" />
@@ -15,74 +15,70 @@
         <img src="icons/icon128.png" alt="" width="56" height="56" />
         <div>
           <h1>LinkUnzip</h1>
-          <p class="muted">Extract a ZIP straight from a link into a folder, without ever saving the ZIP.</p>
+          <p class="muted" data-i18n>Extract a ZIP straight from a link into a folder, without ever saving the ZIP.</p>
         </div>
       </header>
-
       <ol class="steps">
         <li class="step" data-state="done">
           <span class="mark" aria-hidden="true"></span>
           <div>
-            <h2>Add the extension</h2>
-            <p class="muted">Done. Everything runs here in the browser: there is nothing else to install.</p>
+            <h2 data-i18n>Add the extension</h2>
+            <p class="muted" data-i18n>Done. Everything runs here in the browser: there is nothing else to install.</p>
           </div>
         </li>
-
         <li class="step" id="step-sites" data-state="next">
           <span class="mark" aria-hidden="true"></span>
           <div>
-            <h2>Let LinkUnzip read zip links</h2>
-            <p class="muted">
+            <h2 data-i18n>Let LinkUnzip read zip links</h2>
+            <p class="muted" data-i18n>
               To read a zip's index and only the files you pick, LinkUnzip asks the zip's server for parts of the file.
               Chrome needs your permission for that. LinkUnzip only connects to a site when you give it a link there,
               and nothing goes anywhere else.
             </p>
             <div class="btn-row">
-              <button id="allow-all" class="btn primary" type="button">Allow on every site</button>
+              <button id="allow-all" class="btn primary" type="button" data-i18n>Allow on every site</button>
             </div>
             <p id="sites-status" class="status" role="status"></p>
-            <p class="muted small">Prefer to decide per site? Skip this: LinkUnzip asks the first time you use a link on a new site.</p>
+            <p class="muted small" data-i18n>Prefer to decide per site? Skip this: LinkUnzip asks the first time you use a link on a new site.</p>
           </div>
         </li>
-
         <li class="step" id="step-folder" data-state="done">
           <span class="mark" aria-hidden="true"></span>
           <div>
-            <h2>Where extracted files go</h2>
-            <p class="muted">
-              Into your <b>Downloads</b> folder, in a folder named after the zip. Nothing to set up.
-            </p>
-            <p class="muted small">
+            <h2 data-i18n>Where extracted files go</h2>
+            <p class="muted" data-i18n>Into your Downloads folder, in a folder named after the zip. Nothing to set up.</p>
+            <p class="muted small" data-i18n>
               Zips with thousands of files are much faster into a folder you choose: Chrome's downloads save about 6
               files a second. Chrome doesn't let extensions pick Downloads, Desktop or Documents themselves, so make a
-              folder inside one of them (for example Downloads &gt; LinkUnzip) and pick that.
+              folder inside one of them (for example Downloads > LinkUnzip) and pick that.
             </p>
             <div class="btn-row">
               <button id="folder" class="btn" type="button">Choose a folder instead...</button>
-              <button id="use-downloads" class="btn" type="button" hidden>Use Downloads</button>
+              <button id="use-downloads" class="btn" type="button" data-i18n hidden>Use Downloads</button>
             </div>
             <p id="folder-status" class="status" role="status"></p>
           </div>
         </li>
-
         <li class="step" id="step-try" data-state="todo">
           <span class="mark" aria-hidden="true"></span>
           <div>
-            <h2>Try it</h2>
-            <p class="muted">
-              Right-click any link to a <b>.zip</b> file and choose <b>Extract with LinkUnzip</b>. Or click the LinkUnzip
-              icon in the toolbar and paste a link.
+            <h2 data-i18n>Try it</h2>
+            <p class="muted" id="try-text">
+              Right-click any link to a .zip file and choose Extract with LinkUnzip. Or click the LinkUnzip icon in the
+              toolbar and paste a link.
             </p>
-            <p class="muted small">
+            <p class="muted small" data-i18n>
               Can't see the icon? Click the puzzle piece next to the address bar, then the pin next to LinkUnzip.
             </p>
             <details>
-              <summary>Optional: the LinkUnzip helper for Windows</summary>
+              <summary data-i18n>Optional: the LinkUnzip helper for Windows</summary>
               <p class="muted small">
-                LinkUnzip doesn't need it. Once it is installed, Settings > Extract with the Windows helper lets it save
-                straight into Downloads, which is faster for zips with thousands of files, and Open folder opens Explorer
-                there. It also brings the <code>linkunzip</code> command line.
-                <a href="https://github.com/CincaAlex/LinkUnzip/releases/latest" target="_blank" rel="noopener">Get it on GitHub</a>.
+                <span id="helper-text">
+                  LinkUnzip doesn't need it. Once it is installed, Settings > Extract with the Windows helper lets it
+                  save straight into Downloads, which is faster for zips with thousands of files, and Open folder opens
+                  Explorer there. It also brings the linkunzip command line.
+                </span>
+                <a href="https://github.com/CincaAlex/LinkUnzip/releases/latest" target="_blank" rel="noopener" data-i18n>Get it on GitHub</a>
               </p>
             </details>
           </div>

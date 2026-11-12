@@ -7,7 +7,8 @@ Security problems: please don't open a public issue, see [SECURITY.md](SECURITY.
 
 ## What you need
 
-- Windows 10 or 11 (the helper is Windows-only for now).
+- Windows 10 or 11 for the helper and the installer (they are Windows-only for now). The extension
+  alone can be worked on in Chrome on Windows, macOS or Linux; it is tested on all three.
 - [Rust](https://rustup.rs), stable toolchain, with `rustfmt` and `clippy`.
 - Python 3 on `PATH` (the tests generate their archives with it).
 - Node 22, for checking the extension scripts and for the end-to-end test.
@@ -126,6 +127,11 @@ Releases are built by GitHub Actions from a `v*` tag: see [docs/release.md](docs
 - Rust: `cargo fmt`, no clippy warnings, errors with `anyhow` context that reads as a sentence.
 - Extension: text that comes from archives or servers goes through `textContent` (the `h()`
   helper), never `innerHTML`. No remote code, no analytics, no tracking.
+- Extension text people see goes through `t("English sentence", { name })` or, with a count,
+  `tn("{count} file", "{count} files", n)` from `extension/i18n.js` (in HTML: `data-i18n`). Add
+  the sentence to every `extension/i18n/<lang>.json`, then run `node tools/i18n_check.mjs`: it
+  lists what is missing or has other `{placeholders}`. For a language you don't speak, put the
+  English sentence in for now and say so in the pull request.
 - Archives are untrusted input: a change to parsing or writing files needs a test with a hostile
   archive (`tools/make_malicious_zips.py`).
 - Keep the style of the code around your change: naming, comment density, how errors are shown.

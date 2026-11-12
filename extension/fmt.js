@@ -1,25 +1,30 @@
 // Small helpers shared by the background worker and the popup.
 
-/** Same units as the LinkUnzip CLI and Windows Explorer: 1024-based steps, labelled KB/MB/GB/TB. */
+import { num, t } from "./i18n.js";
+
+/**
+ * Same units as the LinkUnzip CLI and Windows Explorer: 1024-based steps, labelled KB/MB/GB/TB
+ * (Ko/Mo/Go/To in French), with the language's own decimal mark.
+ */
 export function humanBytes(n) {
   if (n == null || Number.isNaN(n)) return "?";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  if (n < 1024) return `${Math.round(n)} B`;
+  const units = [t("B"), t("KB"), t("MB"), t("GB"), t("TB")];
+  if (n < 1024) return `${num(Math.round(n))} ${units[0]}`;
   let value = n;
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
     value /= 1024;
     unit += 1;
   }
-  return `${value.toFixed(unit >= 3 ? 2 : 1)} ${units[unit]}`;
+  return `${num(value, unit >= 3 ? 2 : 1)} ${units[unit]}`;
 }
 
-/** `1.4s`, `1m 23s`, `2h 05m`. */
+/** `1.4 s`, `1 min 23 s`, `2 h 05 min`. */
 export function humanDuration(ms) {
   const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${String(Math.floor(s % 60)).padStart(2, "0")}s`;
-  return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+  if (s < 60) return t("{s} s", { s: num(s, 1) });
+  if (s < 3600) return t("{m} min {s} s", { m: Math.floor(s / 60), s: String(Math.floor(s % 60)).padStart(2, "0") });
+  return t("{h} h {m} min", { h: Math.floor(s / 3600), m: String(Math.floor((s % 3600) / 60)).padStart(2, "0") });
 }
 
 /** `0:42`, `12:05`, `1:02:03` for ETAs. */

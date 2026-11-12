@@ -1,7 +1,7 @@
 # Security policy
 
 LinkUnzip downloads files from links and writes them to your disk, and its browser extension can
-pass your login cookies for a site to the helper program. Security reports are very welcome.
+use your browser login for a site you allow. Security reports are very welcome.
 
 ## Reporting a vulnerability
 
@@ -38,5 +38,5 @@ Examples of what we want to hear about:
 - The installer or the helper registration being abusable on a shared PC.
 - Anything in the extension that lets a web page or an archive inject script.
 
-Out of scope: problems that need an attacker who already controls your Windows account, the
+Out of scope: problems that need an attacker who already controls your user account, the
 SmartScreen warning on unsigned builds, and denial of service by a server that is simply slow.

@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Extract a ZIP straight from a link into a folder, without ever saving the ZIP.</b><br>
-  A browser extension for Chrome, Edge and Brave. Nothing else to install.
+  A browser extension for Chrome, Edge and Brave, on Windows, Mac and Linux. Nothing else to install.
 </p>
 
 <p align="center">
@@ -14,6 +14,7 @@
   <a href="https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica?utm_source=github&utm_medium=readme"><img src="https://img.shields.io/chrome-web-store/v/dapeiljhjlaelolngnoagobeojcpkica" alt="Chrome Web Store version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0--or--later-blue" alt="Licence: GPL-3.0-or-later"></a>
   <img src="https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%20%7C%20Brave-4285F4" alt="Chrome, Edge and Brave">
+  <img src="https://img.shields.io/badge/tested%20on-Windows%20%7C%20macOS%20%7C%20Linux-555" alt="Tested on Windows, macOS and Linux">
 </p>
 
 <p align="center">
@@ -45,14 +46,28 @@ LinkUnzip reads the zip's index from the end of the file, shows you what is insi
 cost, then downloads only the parts it needs and saves the files straight into your Downloads
 folder, or a folder you choose. The zip itself is never saved.
 
-Measured on the developer's PC, in Chrome:
+Measured on the developer's PC, in Chrome, with the extension alone:
 
 | Archive | Result |
 |---|---|
 | Blender 4.2 for Windows (365.8 MB zip, 5,518 files), into a folder you choose | 925.6 MB written, 365.2 MB downloaded in 8 requests (including the 1.0 MB index), 0 B of zip on disk, every file verified, in 52 s. A normal download-then-extract needs 1.26 GB. |
 | One photo out of COCO train2017 (18.01 GB zip, 118,287 files) | 12.2 MB downloaded (the 11.9 MB index and the 219 KB photo), in about 6 s. |
+| The `test` folder of a Kaggle dataset ([Chest X-Ray Images](https://www.kaggle.com/datasets/paultimothymooney/chest-xray-pneumonia), 2.29 GB zip, 17,591 files), no Kaggle login | 624 images, 75.4 MB written, 76.2 MB downloaded in 10 requests, 10 to 13 s. |
+| One photo out of a Hugging Face dataset zip ([Flickr30k images](https://huggingface.co/datasets/nlphuji/flickr30k), 4.09 GB, 63,569 files) | 7.2 MB downloaded (the 7.0 MB index and the 213 KB photo), 5 to 7 s. |
+| GitHub's *Download ZIP* of the React repository (7,276 files), read in one pass | 38.8 MB written from 13.8 MB downloaded, 0 B of zip on disk, every file verified, 80 to 85 s. |
+| A password-protected zip (WinZip AES-256, 120.0 MB, 61 files), one file | 18 KB written, 72.5 KB downloaded in 6 requests. |
 
-Sizes are shown the way Windows shows them (1 GB = 1024 MB).
+The last four were measured with 1.2.0 on 11 November 2026; the pages on
+[linkunzip.app](https://linkunzip.app/zip-too-big-to-download) walk through each one. Sizes are
+shown the way Windows shows them (1 GB = 1024 MB).
+
+### Windows, Mac and Linux
+
+LinkUnzip runs entirely inside the browser, and the same tests pass on all three systems in Google
+Chrome: Windows 11, macOS 15 (Apple silicon, on GitHub Actions) and Ubuntu 24.04. Every test
+downloaded exactly the same bytes on Windows and Linux, and on Mac and Linux the files saved into
+Downloads matched a normal download of the zip byte for byte. Only the optional
+[helper](#optional-the-helper-for-windows) and the [command line](#command-line) are Windows only.
 
 ## Features
 
@@ -74,7 +89,12 @@ Sizes are shown the way Windows shows them (1 GB = 1024 MB).
   outer zip.
 - **Servers that send the whole file at once,** like GitHub's green *Download ZIP*: *Extract
   everything (one pass)* reads the zip once, still without saving it.
+- **In 8 languages.** English, Deutsch, Español, Français, Italiano, 日本語, Português (Brasil)
+  and Română: it follows the browser, or pick one in Settings.
 - **Big archives.** ZIP64, no 2 GB limit.
+- **Datasets.** Take one folder of a [Kaggle dataset](https://linkunzip.app/kaggle-dataset-download-part)
+  or a few files of a [Hugging Face dataset zip](https://linkunzip.app/hugging-face-dataset-zip)
+  instead of downloading all of it.
 - **Private links.** If a download needs your login, LinkUnzip asks before using it on that site.
 - **Light and dark**, following your system or your choice.
 - **No account, no ads, no uploads, no tracking.**
@@ -174,9 +194,9 @@ call it `LinkUnzip` and pick that.
   a form POST or a one-time token.
 - The free space on your drive (browsers don't tell extensions).
 
-LinkUnzip runs wherever Chrome does, but it has been tested on Windows so far; the helper is Windows
-only. The extracted files still need their disk space; what LinkUnzip saves is the room the zip
-would take.
+LinkUnzip is tested in Google Chrome on Windows, macOS and Linux, and also runs in Edge, Brave and
+Chromium. The helper and the command line are Windows only. The extracted files still need their
+disk space; what LinkUnzip saves is the room the zip would take.
 
 ## Privacy
 
@@ -189,9 +209,24 @@ Full policy: [docs/privacy.md](docs/privacy.md).
 
 ### Do I need the helper program?
 
-No. Everything in [How to use it](#how-to-use-it) works in the browser. The helper is only for
-servers that can't send parts of a file, Open folder, the free-space check, the command line, and
-extra speed on zips with thousands of small files.
+No. Everything in [How to use it](#how-to-use-it) works in the browser, GitHub's *Download ZIP*
+and password-protected zips included. The helper adds Open folder, the free-space check, the
+command line, and extra speed on zips with thousands of small files.
+
+### Does it work on Mac and Linux?
+
+Yes. The same real-server tests (a Kaggle dataset, a Hugging Face zip, GitHub's *Download ZIP* and
+a password-protected zip) pass in Google Chrome on macOS 15 and on Ubuntu 24.04, as on Windows.
+Safari and Firefox are not supported: LinkUnzip is a Chrome extension. More on
+[linkunzip.app/unzip-from-url-mac](https://linkunzip.app/unzip-from-url-mac) and
+[linkunzip.app/unzip-from-url-linux](https://linkunzip.app/unzip-from-url-linux).
+
+### Can I download part of a Kaggle or Hugging Face dataset?
+
+Yes, when the dataset is a zip. For a public Kaggle dataset, paste
+`https://www.kaggle.com/api/v1/datasets/download/<owner>/<dataset>` in the popup (no Kaggle account
+needed) and tick the folders you want. On Hugging Face, use the zip's link with `/resolve/` in it.
+Only the files you tick are downloaded.
 
 ### Why can't I pick Downloads or Desktop as the folder?
 
@@ -288,7 +323,8 @@ helper does the same steps natively, and without Range support (`--stream`) it r
 once from start to end and extracts each entry as it arrives, including entries whose sizes only
 follow their data.
 
-**Limits:** stored and deflate entries only; no encryption, multi-disk archives, self-extractors,
+**Limits:** stored and deflate entries only; ZipCrypto and WinZip AES are decrypted in the
+browser (the helper leaves password-protected zips to it); no multi-disk archives, self-extractors,
 timestamps or permissions; symbolic links are written as small text files. One big file uses one
 connection, and a retry restarts that file.
 

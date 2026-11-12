@@ -15,6 +15,8 @@ import { checksCrc } from "./engine/crypto.js";
 import { checkPassword, decryptorFor, entryChunks, seekToData } from "./engine/entry.js";
 import { ByteReader, Source } from "./engine/source.js";
 import { humanBytes } from "./fmt.js";
+import { loadLanguage, t, tn, translatePage } from "./i18n.js";
+import { loadSettings } from "./settings.js";
 
 const TEXT_FIRST = 256 * 1024; // shown at first; Load more adds TEXT_MORE
 const TEXT_MORE = 1024 * 1024;
@@ -92,7 +94,7 @@ async function open(info, ctl, stats) {
 }
 
 function downloadedLine(stats, info, extra = "") {
-  return `${humanBytes(stats.downloaded)} downloaded of a ${humanBytes(info.source.size)} zip${extra}`;
+  return `${t("{done} downloaded of a {size} zip", { done: humanBytes(stats.downloaded), size: humanBytes(info.source.size) })}${extra}`;
 }
 
 async function readAll(info, ctl, stats) {
@@ -165,7 +167,7 @@ async function showText(info, ctl, stats, { csv = false, sniffOnly = false } = {
   const more = $("more");
   const update = () => {
     const all = shown >= info.entry.usize || done;
-    setStats(`${all ? "Whole file" : `First ${humanBytes(shown)} of ${humanBytes(info.entry.usize)}`} · ${downloadedLine(stats, info)}`);
+    setStats(`${all ? t("Whole file") : t("First {shown} of {size}", { shown: humanBytes(shown), size: humanBytes(info.entry.usize) })} · ${downloadedLine(stats, info)}`);
     more.hidden = all;
   };
   const load = async (budget) => {
@@ -245,7 +247,7 @@ async function showCsv(info, ctl, stats, first, gen, done, decoder) {
   view.className = "";
   view.replaceChildren(table);
   const all = done && body.length < CSV_ROWS;
-  setStats(`${all ? `All ${body.length.toLocaleString()} rows` : `First ${body.length.toLocaleString()} rows`} · ${downloadedLine(stats, info)}`);
+  setStats(`${all ? tn("All {count} row", "All {count} rows", body.length) : tn("First {count} row", "First {count} rows", body.length)} · ${downloadedLine(stats, info)}`);
   return true;
 }
 
@@ -253,17 +255,17 @@ async function showBlob(info, ctl, stats, kind) {
   const limit = LIMITS[kind];
   if (info.entry.usize > limit && !current?.force) {
     card(
-      `This file is ${humanBytes(info.entry.usize)}`,
-      h("p", { class: "muted" }, "A preview holds the whole file in memory. For a file this big, extracting it is usually better."),
-      h("p", {}, h("button", { class: "btn", type: "button", onclick: () => show(true) }, "Preview anyway")),
+      t("This file is {size}", { size: humanBytes(info.entry.usize) }),
+      h("p", { class: "muted" }, t("A preview holds the whole file in memory. For a file this big, extracting it is usually better.")),
+      h("p", {}, h("button", { class: "btn", type: "button", onclick: () => show(true) }, t("Preview anyway"))),
     );
     setStats("");
     return true;
   }
   view.className = "center";
-  view.replaceChildren(h("div", { class: "spinner", role: "img", "aria-label": "Loading" }));
-  setStats(`Loading ${humanBytes(info.entry.usize)}...`);
-  const timer = setInterval(() => setStats(`Loading: ${humanBytes(stats.downloaded)} of ~${humanBytes(info.entry.csize)}`), 300);
+  view.replaceChildren(h("div", { class: "spinner", role: "img", "aria-label": t("Loading") }));
+  setStats(t("Loading {size}...", { size: humanBytes(info.entry.usize) }));
+  const timer = setInterval(() => setStats(t("Loading: {done} of ~{size}", { done: humanBytes(stats.downloaded), size: humanBytes(info.entry.csize) })), 300);
   let parts;
   try {
     parts = await readAll(info, ctl, stats);
@@ -274,7 +276,7 @@ async function showBlob(info, ctl, stats, kind) {
   const url = URL.createObjectURL(blob);
   current.url = url;
   view.replaceChildren(h("img", { class: "image", src: url, alt: path.slice(path.lastIndexOf("/") + 1) }));
-  setStats(`Whole file, CRC-32 checked · ${downloadedLine(stats, info)}`);
+  setStats(`${t("Whole file, CRC-32 checked")} · ${downloadedLine(stats, info)}`);
   return true;
 }
 
@@ -297,15 +299,15 @@ async function showStreamed(info, kind) {
     el = h(kind, { src: r.url, controls: true, preload: "metadata" });
     el.addEventListener("error", () => {
       if (current !== mine) return;
-      card("Can't play this file here", h("p", { class: "muted" }, "Chrome can't play this format, or the data didn't come through right (it is checked as it plays). Extract it to open it in another player."));
+      card(t("Can't play this file here"), h("p", { class: "muted" }, t("Chrome can't play this format, or the data didn't come through right (it is checked as it plays). Extract it to open it in another player.")));
     });
   }
   view.replaceChildren(el);
   const seekable = info.entry.method === 0 && !info.encrypted;
-  const how = seekable ? "seeking downloads only the part it needs" : "compressed in the zip, so it plays from its start";
+  const how = seekable ? t("Streamed from the zip, seeking downloads only the part it needs") : t("Streamed from the zip, compressed in it, so it plays from its start");
   const update = async () => {
     const s = await send("previewStats", { token: r.token });
-    if (current === mine) setStats(`Streamed from the zip, ${how} · ${humanBytes(s?.downloaded || 0)} downloaded of a ${humanBytes(info.source.size)} zip`);
+    if (current === mine) setStats(`${how} · ${t("{done} downloaded of a {size} zip", { done: humanBytes(s?.downloaded || 0), size: humanBytes(info.source.size) })}`);
   };
   mine.timer = setInterval(update, 1000);
   update();
@@ -315,7 +317,7 @@ async function showStreamed(info, kind) {
 /** An encrypted file and no password yet for this zip: ask, and keep it for the zip. */
 function askPassword(info, wrong) {
   return new Promise((resolve) => {
-    const input = h("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": "Password" });
+    const input = h("input", { type: "password", autocomplete: "off", spellcheck: "false", "aria-label": t("Password") });
     const go = async () => {
       if (!input.value) return input.focus();
       await send("setPassword", { id: jobId, password: input.value });
@@ -323,9 +325,9 @@ function askPassword(info, wrong) {
     };
     input.addEventListener("keydown", (e) => e.key === "Enter" && go());
     card(
-      wrong ? "That password doesn't fit" : "This file is password-protected",
-      h("p", { class: "muted" }, "Type the zip's password to see it. LinkUnzip keeps it only while the zip is open, never saved."),
-      h("p", { class: "row" }, input, h("button", { class: "btn primary", type: "button", onclick: go }, "Show")),
+      wrong ? t("That password doesn't fit") : t("This file is password-protected"),
+      h("p", { class: "muted" }, t("Type the zip's password to see it. LinkUnzip keeps it only while the zip is open, never saved.")),
+      h("p", { class: "row" }, input, h("button", { class: "btn primary", type: "button", onclick: go }, t("Show"))),
     );
     setStats("");
     input.focus();
@@ -339,16 +341,16 @@ function showDetails(info, why) {
     h(
       "dl",
       { class: "kv" },
-      h("dt", {}, "Size"),
+      h("dt", {}, t("Size")),
       h("dd", {}, humanBytes(e.usize)),
-      h("dt", {}, "In the zip"),
-      h("dd", {}, `${humanBytes(e.csize)} (${e.method === 0 ? "stored" : e.method === 8 ? "deflate" : `method ${e.method}`})`),
+      h("dt", {}, t("In the zip")),
+      h("dd", {}, `${humanBytes(e.csize)} (${e.method === 0 ? t("stored") : e.method === 8 ? "deflate" : t("method {n}", { n: e.method })})`),
       h("dt", {}, "CRC-32"),
       h("dd", {}, e.crc.toString(16).padStart(8, "0")),
-      h("dt", {}, "Path"),
+      h("dt", {}, t("Path")),
       h("dd", {}, path),
     ),
-    h("p", { class: "muted" }, "Tick it in LinkUnzip's file list to extract it."),
+    h("p", { class: "muted" }, t("Tick it in LinkUnzip's file list to extract it.")),
   );
   setStats("");
 }
@@ -364,20 +366,20 @@ async function show(force = false) {
   $("more").hidden = true;
   $("wrap-box").hidden = true;
   const name = path.slice(path.lastIndexOf("/") + 1);
-  document.title = `${name} - LinkUnzip preview`;
+  document.title = t("{name} - LinkUnzip preview", { name });
   $("name").textContent = name;
   view.className = "center";
-  view.replaceChildren(h("div", { class: "spinner", role: "img", "aria-label": "Loading" }));
+  view.replaceChildren(h("div", { class: "spinner", role: "img", "aria-label": t("Loading") }));
   setStats("");
 
   const r = await send("entry", { id: jobId, path });
   if (!r?.ok) {
-    card("Can't show this file", h("p", { class: "muted" }, r?.error?.message || "That zip is no longer open in LinkUnzip. Open it again from the popup."));
+    card(t("Can't show this file"), h("p", { class: "muted" }, r?.error?.message || t("That zip is no longer open in LinkUnzip. Open it again from the popup.")));
     return;
   }
-  $("where").textContent = `${r.name} · ${parentOf(path) || "top folder"}`;
+  $("where").textContent = `${r.name} · ${parentOf(path) || t("top folder")}`;
   updateNav();
-  if (r.unsupported) return showDetails(r, `LinkUnzip can't read this file (${r.unsupported})`);
+  if (r.unsupported) return showDetails(r, t("LinkUnzip can't read this file ({reason})", { reason: r.unsupported }));
   if (r.encrypted && !r.password) {
     r.password = await askPassword(r, false);
     if (current?.ctl !== ctl) return;
@@ -391,12 +393,12 @@ async function show(force = false) {
     if (kind === "image") return await showBlob(r, ctl, stats, kind);
     if (kind === "csv") return await showText(r, ctl, stats, { csv: true });
     if (kind === "text") {
-      if (!(await showText(r, ctl, stats))) showDetails(r, "This file isn't text");
+      if (!(await showText(r, ctl, stats))) showDetails(r, t("This file isn't text"));
       return;
     }
     // Unknown type: show it if it turns out to be text.
-    if (r.entry.usize === 0) return showDetails(r, "This file is empty");
-    if (!(await showText(r, ctl, stats, { sniffOnly: true }))) showDetails(r, `No preview for .${extOf(path)} files`);
+    if (r.entry.usize === 0) return showDetails(r, t("This file is empty"));
+    if (!(await showText(r, ctl, stats, { sniffOnly: true }))) showDetails(r, t("No preview for .{ext} files", { ext: extOf(path) }));
   } catch (e) {
     if (ctl.signal.aborted) return;
     if (e?.code === "password_wrong") {
@@ -404,7 +406,7 @@ async function show(force = false) {
       if (current?.ctl === ctl) show(force);
       return;
     }
-    card("Couldn't load this file", h("p", { class: "bad" }, e?.message || String(e)));
+    card(t("Couldn't load this file"), h("p", { class: "bad" }, e?.message || String(e)));
   }
 }
 
@@ -437,4 +439,6 @@ addEventListener("keydown", (e) => {
 });
 $("wrap").addEventListener("change", () => view.querySelector("pre.text")?.classList.toggle("wrap", $("wrap").checked));
 // The viewer is reused for the next preview: the background loads a new address into this tab.
+await loadLanguage((await loadSettings()).language);
+translatePage();
 show();

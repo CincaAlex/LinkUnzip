@@ -7,6 +7,7 @@ import { createEngine } from "./engine/engine.js";
 import { Coded } from "./engine/errors.js";
 import { folderSink } from "./engine/fsa-sink.js";
 import { folderLabel, folderPermission, getFolder } from "./folder.js";
+import { loadLanguage, t } from "./i18n.js";
 import { indexCache, runStore } from "./store.js";
 
 // What each job saved through Chrome's downloads (path -> "crc:size"), so Resume can skip it:
@@ -19,18 +20,21 @@ const savedByJob = new Map();
  * of it to create (or "" for none). `job` is the job's id.
  */
 async function openSink(target, job) {
+  // The folder's name the popup shows ("Downloads > x") is in the popup's language, which the
+  // background sends along (this page can't read the extension's storage).
+  await loadLanguage(target?.language || "en").catch(() => {});
   if (target?.key === "downloads") {
     if (!savedByJob.has(job)) savedByJob.set(job, new Map());
     return downloadsSink({
       sub: target.sub,
-      label: folderLabel("Downloads", target.sub),
+      label: folderLabel(t("Downloads"), target.sub),
       saved: savedByJob.get(job),
       save: (m) => saveFile({ cmd: "saveFile", job, ...m }),
       store: runStore,
     });
   }
   const root = target?.key ? await getFolder(target.key) : null;
-  if (!root) throw new Coded("no_folder", "Choose a folder to extract into.");
+  if (!root) throw new Coded("no_folder", t("Choose a folder to extract into."));
   if ((await folderPermission(root)) !== "granted") {
     throw new Coded("folder_permission", `LinkUnzip needs your permission again to write into ${root.name}.`);
   }
@@ -39,7 +43,7 @@ async function openSink(target, job) {
     try {
       dir = await root.getDirectoryHandle(target.sub, { create: true });
     } catch (e) {
-      throw new Coded("folder_not_writable", `Couldn't create the folder ${target.sub} in ${root.name}.`, { detail: `${e?.name}: ${e?.message}` });
+      throw new Coded("folder_not_writable", t("Couldn't create the folder {folder} in {parent}.", { folder: target.sub, parent: root.name }), { detail: `${e?.name}: ${e?.message}` });
     }
   }
   return folderSink(dir, folderLabel(root.name, target.sub), target.sub || null);

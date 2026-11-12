@@ -6,6 +6,7 @@
 // Each file is checked (size and CRC-32) before Chrome gets it, and Chrome only gives a file its
 // real name once all of it is written, so a file that didn't check out never appears.
 
+import { t } from "../i18n.js";
 import { Coded } from "./errors.js";
 
 /** Files Chrome saves at the same time: more than this doesn't go faster. */
@@ -197,12 +198,12 @@ function fromSave(r, path) {
   const detail = `${path}: ${r.error || r.code}`;
   switch (r.code) {
     case "ask_where":
-      return new Coded("ask_where", "Chrome is set to ask where to save each download.", { detail });
+      return new Coded("ask_where", t("Chrome is set to ask where to save each download."), { detail });
     case "disk_full":
-      return new Coded("disk_full", "The drive is full.", { detail });
+      return new Coded("disk_full", t("The drive is full."), { detail });
     case "bad_name":
-      return new Coded("folder_not_writable", `Chrome's downloads didn't accept the name ${path}.`, { detail });
+      return new Coded("folder_not_writable", t("Chrome's downloads didn't accept the name {name}.", { name: path }), { detail });
     default:
-      return new Coded("folder_not_writable", `Chrome couldn't save ${path} into Downloads.`, { detail });
+      return new Coded("folder_not_writable", t("Chrome couldn't save {name} into Downloads.", { name: path }), { detail });
   }
 }

@@ -10,13 +10,13 @@ export const HELPER_NEEDS = ["marks", "drop_top"];
 export const helperCanExtract = (helper) => Boolean(helper) && HELPER_NEEDS.every((f) => helper.features?.includes(f));
 
 /**
- * `{via, why}`: "helper" or "engine". With the helper turned on, `why` says what made the browser
- * take this one.
+ * `{via, why, vars}`: "helper" or "engine". With the helper turned on, `why` says what made the
+ * browser take this one: an English sentence for t() in i18n.js, with `vars` for its {placeholders}.
  */
 export function engineFor(job, settings, helper) {
   if (!settings?.useHelper) return { via: "engine", why: null };
   if (!helper) return { via: "engine", why: "the helper isn't installed or didn't start" };
-  if (!helperCanExtract(helper)) return { via: "engine", why: `the helper on this PC (${helper.version}) is too old for this` };
+  if (!helperCanExtract(helper)) return { via: "engine", why: "the helper on this PC ({version}) is too old for this", vars: { version: helper.version } };
   if (job?.inner?.length) return { via: "engine", why: "the helper can't open a zip inside a zip" };
   if (job?.report?.encrypted > 0) return { via: "engine", why: "the helper can't open password-protected files" };
   if (job?.loginSent) return { via: "engine", why: "this link needs your login, and only the browser sends it" };

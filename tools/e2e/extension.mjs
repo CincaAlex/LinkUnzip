@@ -773,7 +773,7 @@ async function stubbedViews(browser) {
   const notesText = await p.evaluate(() => document.getElementById("view").innerText);
   await shot(p, "17c-done-notes");
   await p.close();
-  check(/2 files in this zip have another password/.test(notesText) && /x\.txt, y\.txt/.test(notesText) && /lists 1 file differently/.test(notesText) && /in 1 pass/.test(notesText), "the done view lists files with another password and files the index lists differently");
+  check(/2 files in this zip have another password/.test(notesText) && /x\.txt, y\.txt/.test(notesText) && /lists 1 file differently/.test(notesText) && /in one pass/.test(notesText), "the done view lists files with another password and files the index lists differently");
 
   await themeSwitch(browser, session);
   await themes(browser, session);
@@ -1140,6 +1140,47 @@ async function themes(browser, session) {
     await w.close();
   }
   check(bad.length === 0, `${count} views in light and dark: no sideways scrolling at 400 px, text contrast AA${bad.length ? `: ${bad.join("; ")}` : ""} (screenshots in ${dir})`);
+
+  // The same views in every language of i18n/: German and French run longest. Nothing may scroll
+  // sideways or be cut off inside a button, and the page must say which language it is in.
+  const langDir = path.join(SHOTS, "languages");
+  fs.mkdirSync(langDir, { recursive: true });
+  const langBad = [];
+  let langCount = 0;
+  for (const lang of ["de", "es", "fr", "it", "ja", "pt_BR", "ro"]) {
+    for (const [name, state, prepare] of views) {
+      const p = await openStubbedPopup(browser, { session: state, archive: name.startsWith("ready") ? ARCHIVE : null, local: { settings: { language: lang } } });
+      lastPopup = p;
+      await p.waitForSelector("#view > *");
+      if (prepare) await prepare(p);
+      await sleep(150);
+      const wide = await overflowX(p);
+      if (wide > 0) langBad.push(`${lang}/${name}: ${wide}px too wide`);
+      const cut = await p.evaluate(() =>
+        [...document.querySelectorAll("button, .badge, .chip, legend, .segmented span, .fl-sum, .stat span")]
+          .filter((el) => el.offsetParent && el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow !== "ellipsis")
+          .map((el) => el.textContent.trim().slice(0, 40)),
+      );
+      if (cut.length) langBad.push(`${lang}/${name}: cut off: ${cut.join(" | ")}`);
+      // Pushed out of its card (a card hides what sticks out, so the page doesn't scroll).
+      const out = await p.evaluate(() =>
+        [...document.querySelectorAll(".card input, .card button, .card select, .card a")]
+          .filter((el) => el.offsetParent && el.getBoundingClientRect().right > el.closest(".card").getBoundingClientRect().right + 1)
+          .map((el) => el.placeholder || el.textContent.trim().slice(0, 40)),
+      );
+      if (out.length) langBad.push(`${lang}/${name}: outside its card: ${out.join(" | ")}`);
+      const htmlLang = await p.evaluate(() => document.documentElement.lang);
+      if (htmlLang !== lang.replace("_", "-")) langBad.push(`${lang}/${name}: page says lang=${htmlLang}`);
+      await p.setViewport({ width: 400, height: 100, deviceScaleFactor: 2 });
+      const tall = await p.evaluate(() => document.documentElement.scrollHeight);
+      await p.setViewport({ width: 400, height: Math.min(600, tall), deviceScaleFactor: 2 });
+      await sleep(100);
+      await p.screenshot({ path: path.join(langDir, `${lang}-${name}.png`) });
+      langCount += 1;
+      await p.close();
+    }
+  }
+  check(langBad.length === 0, `${langCount} views in 7 languages: no sideways scrolling or cut-off buttons at 400 px${langBad.length ? `: ${langBad.join("; ")}` : ""} (screenshots in ${langDir})`);
 }
 
 async function dumpFailure() {

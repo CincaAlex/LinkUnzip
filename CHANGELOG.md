@@ -7,6 +7,29 @@ keeps its older version until the next full release.
 
 ## Unreleased
 
+## 1.3.0 - 2026-11-11 (extension only)
+
+### Added
+- **The extension in 8 languages**: the popup, the file list, the preview tab, the setup page,
+  notifications and the right-click entry in German, Spanish, French, Italian, Japanese,
+  Brazilian Portuguese and Romanian, besides English (the languages of the store listing). It
+  follows the browser's language; **Settings > Language** picks another. Numbers and sizes are
+  written the language's way (925,6 MB in German, 925,6 Mo in French).
+
+### Changed
+- In a folder you chose, a small file is written in one go once it is complete and checked, and
+  the download no longer waits for Chrome to open each file first.
+
+### Tests
+- `tools/i18n_check.mjs`: every sentence the extension shows is in every language, with the same
+  placeholders. The popup end-to-end test checks every view in all 7 other languages at 400 px
+  (nothing too wide, cut off or pushed out of its card).
+- `tools/e2e/bench_folder.mjs`: how long a zip with many files takes into a folder or Downloads
+  (Blender 4.2, 5,518 files: about 55 to 65 s into a folder, from a local copy or its server;
+  Chrome's downloads save about 8 files a second, more at once is slower). `real_hosts.mjs` now
+  extracts into the folder it sets up: before, it went into Downloads, which is why Blender took
+  about 10 minutes there.
+
 ## 1.2.0 - 2026-11-05
 
 Also contains everything under 1.1.1 below, which was not released on its own. The helper

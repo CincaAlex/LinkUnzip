@@ -2,7 +2,14 @@
 // (Downloads unless the user picks a folder). Both can be changed later in the popup too.
 
 import { getFolder, pickFolder, setFolder } from "./folder.js";
+import { loadLanguage, t, translatePage } from "./i18n.js";
 import { ALL_SITES, applyTheme, loadSettings } from "./settings.js";
+
+// In the language the popup uses (the browser's, unless Settings chose one).
+await loadLanguage((await loadSettings()).language);
+translatePage();
+document.getElementById("try-text").textContent = t("Right-click any link to a .zip file and choose {menu}. Or click the LinkUnzip icon in the toolbar and paste a link.", { menu: t("Extract with LinkUnzip") });
+document.getElementById("helper-text").textContent = `${t("LinkUnzip doesn't need it. Once it is installed, {setting} lets it save straight into Downloads, which is faster for zips with thousands of files, and Open folder opens Explorer there. It also brings the linkunzip command line.", { setting: `${t("Settings")} > ${t("Extract with the Windows helper")}` })} `;
 
 // Light or dark as chosen in the popup (theme.js already applied the last choice), live.
 loadSettings().then((s) => applyTheme(s.theme));
@@ -19,10 +26,10 @@ const tryIt = $("step-try");
 
 function refresh(allSites, folder) {
   sites.dataset.state = allSites ? "done" : "next";
-  $("sites-status").textContent = allSites ? "Allowed on every site." : "";
+  $("sites-status").textContent = allSites ? t("Allowed on every site.") : "";
   $("allow-all").hidden = allSites;
-  $("folder-status").textContent = folder ? `Extracted files go into ${folder.name}.` : "Extracted files go into Downloads.";
-  $("folder").textContent = folder ? "Change..." : "Choose a folder instead...";
+  $("folder-status").textContent = folder ? t("Extracted files go into {folder}.", { folder: folder.name }) : t("Extracted files go into Downloads.");
+  $("folder").textContent = folder ? t("Change...") : t("Choose a folder instead...");
   $("use-downloads").hidden = !folder;
   tryIt.dataset.state = allSites ? "next" : "todo";
 }
@@ -50,7 +57,7 @@ $("folder").addEventListener("click", async () => {
     await setFolder("base", handle);
     await saveTo("folder");
   } catch (e) {
-    $("folder-status").textContent = `Chrome didn't allow that folder: ${e.message}`;
+    $("folder-status").textContent = t("Chrome didn't allow that folder: {error}", { error: e.message });
     return;
   }
   load();

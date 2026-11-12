@@ -12,6 +12,7 @@
 
 import { h } from "./dom.js";
 import { humanBytes } from "./fmt.js";
+import { num, t, tn } from "./i18n.js";
 
 const PAGE = 500;
 const WINDOW = 2000; // rows on the page at most: "Show more" past that lets go of the first ones
@@ -79,7 +80,8 @@ export function toSelect(marks) {
 // The list
 // ---------------------------------------------------------------------------------------
 
-const plural = (n, word, many = `${word}s`) => `${n.toLocaleString()} ${n === 1 ? word : many}`;
+const fileCount = (n) => tn("{count} file", "{count} files", n);
+const matchCount = (n) => tn("{count} match", "{count} matches", n);
 const norm = (item) => (item.dir && !item.path.endsWith("/") ? { ...item, path: `${item.path}/` } : item);
 
 /**
@@ -94,9 +96,9 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
   const st = { dir: draft.dir || "", query: draft.query || "", start: 0, items: [], total: 0, focus: 0 };
   let rootListing = report.root_dirs ? (Array.isArray(report.root_dirs) ? { total: report.root_dirs.length, items: report.root_dirs } : report.root_dirs) : null;
 
-  const summary = h("span", { class: "fl-sum" }, "All files");
+  const summary = h("span", { class: "fl-sum" }, t("All files"));
   const search = features.search
-    ? h("input", { type: "search", class: "fl-search", placeholder: "Filter or *.jpg", "aria-label": "Filter: search file names in the zip, or a pattern like *.jpg", spellcheck: "false" })
+    ? h("input", { type: "search", class: "fl-search", placeholder: t("Filter or *.jpg"), "aria-label": t("Filter: search file names in the zip, or a pattern like *.jpg"), spellcheck: "false" })
     : null;
   if (search) search.value = st.query;
   // One click to every file of a common type: "*.jpg" as the search.
@@ -105,27 +107,27 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     search && types.length >= 2
       ? h(
           "div",
-          { class: "fl-chips", role: "group", "aria-label": "Find files of one type" },
+          { class: "fl-chips", role: "group", "aria-label": t("Find files of one type") },
           ...types.map(({ ext, files }) =>
-            h("button", { type: "button", class: "chip-btn", "data-q": `*.${ext}`, title: `${plural(files, `.${ext} file`)}`, "aria-pressed": "false" }, `*.${ext}`),
+            h("button", { type: "button", class: "chip-btn", "data-q": `*.${ext}`, title: tn("{count} .{ext} file", "{count} .{ext} files", files, { ext }), "aria-pressed": "false" }, `*.${ext}`),
           ),
         )
       : null;
-  const crumbs = h("nav", { class: "fl-crumbs", "aria-label": "Folder" });
+  const crumbs = h("nav", { class: "fl-crumbs", "aria-label": t("Folder") });
   const count = h("span", { class: "fl-count" });
-  const allBtn = h("button", { type: "button", class: "link small" }, "Select all");
-  const noneBtn = h("button", { type: "button", class: "link small" }, "Select none");
-  const earlier = h("button", { type: "button", class: "btn fl-more", hidden: true }, "Show earlier");
-  const more = h("button", { type: "button", class: "btn fl-more", hidden: true }, "Show more");
-  const rows = h("div", { class: "fl-rows", role: "group", "aria-label": "Files and folders. Arrow keys move, Space ticks, Enter opens a folder, Backspace goes up." });
+  const allBtn = h("button", { type: "button", class: "link small" }, t("Select all"));
+  const noneBtn = h("button", { type: "button", class: "link small" }, t("Select none"));
+  const earlier = h("button", { type: "button", class: "btn fl-more", hidden: true }, t("Show earlier"));
+  const more = h("button", { type: "button", class: "btn fl-more", hidden: true }, t("Show more"));
+  const rows = h("div", { class: "fl-rows", role: "group", "aria-label": t("Files and folders. Arrow keys move, Space ticks, Enter opens a folder, Backspace goes up.") });
   const notice = h("p", { class: "notice", hidden: true });
   const totals = h("span", { class: "fl-totals", role: "status", "aria-live": "polite" });
   // Where you are and how many: only needed inside a folder, in search results or across pages.
   const nav = h("div", { class: "fl-nav" }, crumbs, count);
   const box = h(
     "section",
-    { class: "fl", "aria-label": "File list" },
-    h("div", { class: "fl-head" }, h("h2", {}, "File List ", h("span", {}, "(Select files for extraction)")), search),
+    { class: "fl", "aria-label": t("File List") },
+    h("div", { class: "fl-head" }, h("h2", {}, `${t("File List")} `, h("span", {}, t("(Select files for extraction)"))), search),
     chips,
     toolbar,
     nav,
@@ -137,7 +139,7 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
   // ---- loading ------------------------------------------------------------------------------
 
   function failed(r) {
-    showNotice(r?.error?.message || "LinkUnzip couldn't read the list of files.");
+    showNotice(r?.error?.message || t("LinkUnzip couldn't read the list of files."));
     return null;
   }
 
@@ -206,32 +208,32 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     notice.hidden = true;
     if (st.query) {
       // Search covers the whole zip; the way back leads to the folder that was open.
-      const back = st.dir ? st.dir.split("/").filter(Boolean).pop() : "All files";
-      crumbs.replaceChildren(crumb(back, st.dir, false), h("span", { class: "sep", "aria-hidden": "true" }, "›"), h("span", {}, "Search results"));
-      const matches = plural(st.total, "match", "matches");
-      count.textContent = st.total > st.items.length ? `first ${st.items.length.toLocaleString()} of ${matches}` : matches;
+      const back = st.dir ? st.dir.split("/").filter(Boolean).pop() : t("All files");
+      crumbs.replaceChildren(crumb(back, st.dir, false), h("span", { class: "sep", "aria-hidden": "true" }, "›"), h("span", {}, t("Search results")));
+      const matches = matchCount(st.total);
+      count.textContent = st.total > st.items.length ? t("first {shown} of {matches}", { shown: num(st.items.length), matches }) : matches;
     } else {
       const parts = st.dir.split("/").filter(Boolean);
-      const nodes = [crumb("All files", "", parts.length === 0)];
+      const nodes = [crumb(t("All files"), "", parts.length === 0)];
       parts.forEach((part, i) => {
         nodes.push(h("span", { class: "sep", "aria-hidden": "true" }, "›"), crumb(part, `${parts.slice(0, i + 1).join("/")}/`, i === parts.length - 1));
       });
       crumbs.replaceChildren(...nodes);
-      const shown = st.items.length < st.total ? ` · showing ${(st.start + 1).toLocaleString()}-${(st.start + st.items.length).toLocaleString()}` : "";
-      count.textContent = `${plural(st.total, "item")}${shown}`;
+      const shown = st.items.length < st.total ? ` · ${t("showing {from}-{to}", { from: num(st.start + 1), to: num(st.start + st.items.length) })}` : "";
+      count.textContent = `${tn("{count} item", "{count} items", st.total)}${shown}`;
     }
     earlier.hidden = Boolean(st.query) || st.start === 0;
     more.hidden = Boolean(st.query) || st.start + st.items.length >= st.total;
     nav.hidden = !st.query && st.dir === "" && st.start === 0 && st.items.length >= st.total;
     const keys = Object.keys(marks);
     rows.replaceChildren(...st.items.map((item, i) => row(item, i, keys)));
-    if (!st.items.length) rows.append(h("p", { class: "fl-empty" }, st.query ? "No file names match." : "This folder is empty."));
+    if (!st.items.length) rows.append(h("p", { class: "fl-empty" }, st.query ? t("No file names match.") : t("This folder is empty.")));
     if (keepFocus) focusRow(st.focus);
     // In search results, Select all / none cover every match, not only the rows on the page.
     const wide = Boolean(st.query) && features.tickMatches && st.total > 0;
-    allBtn.textContent = wide ? `Select all ${st.total.toLocaleString()}` : "Select all";
-    allBtn.title = wide ? `Tick every file the search finds (${plural(st.total, "match", "matches")})` : "";
-    noneBtn.title = wide ? "Untick every file the search finds" : "";
+    allBtn.textContent = wide ? t("Select all {count}", { count: num(st.total) }) : t("Select all");
+    allBtn.title = wide ? t("Tick every file the search finds ({matches})", { matches: matchCount(st.total) }) : "";
+    noneBtn.title = wide ? t("Untick every file the search finds") : "";
     if (chips) for (const b of chips.children) b.setAttribute("aria-pressed", String(b.dataset.q === st.query));
   }
 
@@ -241,10 +243,10 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     const cb = h("input", { type: "checkbox", id, "data-i": String(i), tabindex: i === st.focus ? "0" : "-1" });
     cb.checked = state === "on";
     cb.indeterminate = state === "mixed";
-    const size = item.dir ? `${plural(item.files ?? 0, "file")} · ${humanBytes(item.size)}` : humanBytes(item.size);
-    cb.setAttribute("aria-label", item.dir ? `${item.name}, folder, ${size}` : `${item.name}, ${size}`);
+    const size = item.dir ? `${fileCount(item.files ?? 0)} · ${humanBytes(item.size)}` : humanBytes(item.size);
+    cb.setAttribute("aria-label", item.dir ? t("{name}, folder, {size}", { name: item.name, size }) : `${item.name}, ${size}`);
     const name = item.dir
-      ? h("button", { type: "button", class: "fl-name dir", tabindex: "-1", title: "Open the folder", onclick: () => showFolder(item.path) }, `${item.name}/`)
+      ? h("button", { type: "button", class: "fl-name dir", tabindex: "-1", title: t("Open the folder"), onclick: () => showFolder(item.path) }, `${item.name}/`)
       : h("label", { class: "fl-name", for: id }, item.name);
     return h(
       "div",
@@ -256,8 +258,8 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
         { class: "fl-main" },
         name,
         st.query ? h("span", { class: "fl-path" }, parentOf(item.path)) : null,
-        item.unsupported ? h("span", { class: "fl-tag", title: "LinkUnzip can't extract this file" }, item.unsupported) : null,
-        item.locked ? h("span", { class: "fl-tag quiet", title: "Password-protected: LinkUnzip asks for the password before it extracts" }, "password") : null,
+        item.unsupported ? h("span", { class: "fl-tag", title: t("LinkUnzip can't extract this file") }, item.unsupported) : null,
+        item.locked ? h("span", { class: "fl-tag quiet", title: t("Password-protected: LinkUnzip asks for the password before it extracts") }, t("password")) : null,
       ),
       h("span", { class: "fl-size" }, size),
       rowAction(item),
@@ -268,10 +270,10 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
   function rowAction(item) {
     if (item.dir || item.unsupported) return null;
     if (features.inner && /\.zip$/i.test(item.name)) {
-      return h("button", { type: "button", class: "fl-open", tabindex: "-1", title: `Open ${item.name}: its own file list`, "aria-label": `Open ${item.name}`, onclick: () => api.open(item.path) });
+      return h("button", { type: "button", class: "fl-open", tabindex: "-1", title: t("Open {name}: its own file list", { name: item.name }), "aria-label": t("Open {name}", { name: item.name }), onclick: () => api.open(item.path) });
     }
     if (!features.preview) return null;
-    return h("button", { type: "button", class: "fl-peek", tabindex: "-1", title: `Preview ${item.name}`, "aria-label": `Preview ${item.name}`, onclick: () => api.preview(item.path) });
+    return h("button", { type: "button", class: "fl-peek", tabindex: "-1", title: t("Preview {name}", { name: item.name }), "aria-label": t("Preview {name}", { name: item.name }), onclick: () => api.preview(item.path) });
   }
 
   /** Update the ticks in place (no rebuild: focus and scroll stay where they are). */
@@ -408,14 +410,14 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
 
   function changed() {
     const sel = toSelect(marks);
-    summary.textContent = sel.all ? "All files" : sel.none ? "No files" : "Some files";
+    summary.textContent = sel.all ? t("All files") : sel.none ? t("No files") : t("Some files");
     onChange(sel);
     clearTimeout(measureTimer);
     measureTimer = setTimeout(measure, 250);
   }
 
   function showTotals(m) {
-    totals.textContent = `${plural(m.files, "file")}, ${humanBytes(m.extracted)} to write, about ${humanBytes(m.compressed)} to download`;
+    totals.textContent = t("{files}, {write} to write, about {download} to download", { files: fileCount(m.files), write: humanBytes(m.extracted), download: humanBytes(m.compressed) });
   }
 
   async function measure() {
@@ -429,7 +431,7 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
       return onChange({ ...sel, measured: null });
     }
     if (sel.none) {
-      totals.textContent = "No files ticked.";
+      totals.textContent = t("No files ticked.");
       return;
     }
     if (!features.measure) {
@@ -454,8 +456,8 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
       for (const k of Object.keys(marks)) delete marks[k];
       marks[""] = false;
       refreshTicks();
-      summary.textContent = "No files";
-      totals.textContent = "No files ticked.";
+      summary.textContent = t("No files");
+      totals.textContent = t("No files ticked.");
       return onChange(toSelect(marks));
     }
     showTotals(r.measured);
