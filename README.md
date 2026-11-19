@@ -101,9 +101,10 @@ Downloads matched a normal download of the zip byte for byte. Only the optional
 
 ## Install
 
-Add LinkUnzip from the [Chrome Web Store](https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica?utm_source=github&utm_medium=readme). Edge, Brave and Chromium can
-install it from there too (in Edge, click **Allow extensions from other stores** when it asks).
-The Edge Add-ons listing will follow. You can also [run it from source](#build-from-source).
+Add LinkUnzip from the [Chrome Web Store](https://chromewebstore.google.com/detail/dapeiljhjlaelolngnoagobeojcpkica?utm_source=github&utm_medium=readme)
+or, in Edge, from [Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/linkunzip-unzip-zip-file/gachipamoepffbnjpokhmfpekiimgnkm).
+Brave and Chromium can install it from the Chrome Web Store. You can also
+[run it from source](#build-from-source).
 
 That's all: LinkUnzip works inside the browser. A **Set up LinkUnzip** page opens after you add it,
 where you can let it read zip links on every site at once (otherwise Chrome asks the first time you
