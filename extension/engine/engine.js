@@ -2,9 +2,9 @@
 // popup and the background treat both alike.
 //
 // Requests: hello, inspect, list, search, measure, extract, cancel, entry, neighbors,
-// tick_matches. Replies: hello, index_progress, inspected, listing, search_results, measured,
-// started, progress, done, cancelled, entry, neighbors, ticked, error. Every reply carries the
-// request's `id`.
+// tick_matches, sample. Replies: hello, index_progress, inspected, listing, search_results,
+// measured, started, progress, done, cancelled, entry, neighbors, ticked, sampled, error. Every
+// reply carries the request's `id`.
 //
 // The file list's selection comes as its ticks (`select: {marks}`, the nearest mark wins); the
 // helper's `{paths, exclude}` still works.
@@ -21,12 +21,12 @@ import { extract } from "./extract.js";
 import { Filter, listPath, regionEndOf } from "./plan.js";
 import { Source, SubSource } from "./source.js";
 import { streamExtract } from "./stream.js";
-import { heldBackType } from "./dl-sink.js";
+import { hostOf } from "../fmt.js";
 import { Tree, heldBack } from "./tree.js";
 import { indexFromRaw, isDir, isEncrypted, needsPassword, readIndex, unsupportedReason } from "./zip.js";
 
 export const PROTOCOL = 2;
-export const FEATURES = ["list", "search", "measure", "select", "resume", "error_codes", "preview", "marks", "neighbors", "tick_matches", "index_progress", "stream", "password", "inner"];
+export const FEATURES = ["list", "search", "measure", "select", "resume", "error_codes", "preview", "marks", "neighbors", "tick_matches", "index_progress", "stream", "password", "inner", "sample"];
 /** Inspected archives kept for browsing; older ones are read again when asked about. */
 const KEEP_INSPECTED = 8;
 /** Zips inside zips, at most this deep (which also stops a zip that holds itself). */
@@ -34,21 +34,27 @@ const MAX_INNER = 4;
 /** index_progress messages, at most this often. */
 const INDEX_PROGRESS_MS = 250;
 
-function hostOf(url) {
-  try {
-    return new URL(url).host;
-  } catch {
-    return undefined;
+/** The `n` biggest files, in one pass (sorting every entry for five of them costs far more). */
+function largestFiles(entries, n) {
+  const top = [];
+  for (const e of entries) {
+    if (isDir(e) || (top.length === n && e.usize <= top[n - 1].usize)) continue;
+    let i = top.length < n ? top.length : n - 1;
+    while (i > 0 && top[i - 1].usize < e.usize) i--;
+    top.splice(i, 0, e);
+    if (top.length > n) top.pop();
   }
+  return top.map((e) => ({ name: e.name, size: e.usize }));
 }
 
 function report(src, index, tree) {
-  let files = 0;
+  // The tree already added up files, sizes and the types Chrome's downloads hold back.
+  const root = tree.folders[0];
+  const files = root.files_count;
+  const compressed = root.compressed;
+  const extracted = root.size;
   let dirs = 0;
-  let compressed = 0;
-  let extracted = 0;
   const unsupported = [];
-  const held = new Map();
   const encryption = new Set();
   let encrypted = 0;
   let innerZips = 0;
@@ -57,9 +63,6 @@ function report(src, index, tree) {
       dirs += 1;
       continue;
     }
-    files += 1;
-    compressed += e.csize;
-    extracted += e.usize;
     const why = unsupportedReason(e);
     if (why) unsupported.push({ name: e.name, reason: why });
     else if (needsPassword(e)) {
@@ -67,14 +70,8 @@ function report(src, index, tree) {
       encryption.add(encryptionOf(e));
     }
     if (/\.zip$/i.test(e.name)) innerZips += 1;
-    const ext = heldBackType(e.name);
-    if (ext) held.set(ext, (held.get(ext) || 0) + 1);
   }
-  const largest = index.entries
-    .filter((e) => !isDir(e))
-    .sort((a, b) => b.usize - a.usize)
-    .slice(0, 5)
-    .map((e) => ({ name: e.name, size: e.usize }));
+  const largest = largestFiles(index.entries, 5);
   return {
     url: src.url,
     mode: "range",
@@ -103,7 +100,7 @@ function report(src, index, tree) {
     largest,
     extensions: tree.extensions,
     index_cached: Boolean(index.cached),
-    ...heldBack(held),
+    ...heldBack(new Map(Object.entries(root.held || {}))),
   };
 }
 
@@ -140,7 +137,7 @@ export function createEngine({ post, openSink, version = "0", indexCache = null 
   const reply = (type, id, body = {}) => post({ ...body, type, id });
   const fail = (id, e, url) => {
     const d = describe(e);
-    post({ type: "error", id, ...d, host: url ? hostOf(url) : undefined });
+    post({ type: "error", id, ...d, host: (url && hostOf(url)) || undefined });
   };
 
   function keep(id, value) {
@@ -357,6 +354,14 @@ export function createEngine({ post, openSink, version = "0", indexCache = null 
           // marks, said with as few marks as possible.
           return withTree(m.id, ({ tree }) => {
             reply("ticked", m.id, { query: m.query, ...tree.tickMatches(m.marks, m.query || "", m.ticked !== false) });
+          });
+        case "sample":
+          // "Pick N at random": a reproducible sample (same seed, same files), as marks.
+          return withTree(m.id, ({ tree }) => {
+            const scope = typeof m.scope === "string" ? m.scope : "";
+            if (!tree.byPath.has(scope)) throw new Coded("bad_request", `there is no folder ${JSON.stringify(scope)} in the archive`);
+            const r = tree.sample({ scope, query: String(m.query || ""), ext: String(m.ext || ""), n: m.n, seed: m.seed });
+            reply("sampled", m.id, { scope, query: m.query || "", ext: m.ext || "", ...r });
           });
         default:
           return fail(m?.id, new Coded("bad_request", `unknown request ${JSON.stringify(m?.type)}`));

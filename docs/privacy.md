@@ -94,8 +94,23 @@ storage or disk, and never sends it anywhere.
   zip's size and version, then the name, size and checksum of each finished file. It is deleted
   when the job finishes. For Downloads, LinkUnzip remembers which files of a zip it saved, in the
   extension's storage on your PC (IndexedDB), until that extraction finishes (at most 30 days).
-- LinkUnzip and the helper keep no logs. Apart from the zip indexes above, they keep no history of
-  what you opened.
+- **Recent zips** (from version 1.4.0): the link, name, size and destination folder of the last
+  20 zips you opened, shown on the popup's start screen. In the browser's extension storage on your
+  PC. *Clear* on that list removes it; *Settings > Remember recent zips* turns it off.
+- **Recent folders** (from version 1.4.0): references to the last 5 folders you picked, so the popup
+  can offer them again. In the extension's storage on your PC, like the folder you chose.
+- LinkUnzip and the helper keep no logs. Apart from the zip indexes and the recent zips above, they
+  keep no history of what you opened.
+
+## Share links and commands
+
+*Copy share link* (from version 1.4.0) makes a link to `https://linkunzip.app/open` that carries
+the zip's address and your ticks after the `#`. That part of a link is never sent to a server:
+the page reads it in the browser and hands it to LinkUnzip on that computer. LinkUnzip only
+accepts such messages from `https://linkunzip.app`, and only to show the zip with those ticks; it
+never starts an extraction from a link. *Copy as command* puts a command on your clipboard; it
+contains the zip's address and your ticks, never a password or your browser login. Nothing is
+sent anywhere until you paste the link or the command yourself.
 
 ## Other things the extension can see
 
@@ -108,6 +123,14 @@ storage or disk, and never sends it anywhere.
   browser starts downloading a `.zip`, pauses that download and offers it to LinkUnzip instead.
   Once LinkUnzip has extracted the files it cancels the paused download; you can also let Chrome
   continue it. Your other downloads are ignored.
+- **Image grid previews** (from version 1.4.0, off by default): each thumbnail downloads that one
+  image from the zip's site, is shrunk in memory and shown in the preview tab. Nothing is written
+  to disk (LinkUnzip's downloads also skip the browser's cache), and the previews are gone when you
+  close the tab.
+- **The clipboard** (from version 1.4.0): only when you click *Paste* next to the link box. The
+  first click asks for Chrome's permission to read the clipboard (an optional permission, so
+  LinkUnzip doesn't have it until you allow it, and you can remove it in the extension's details).
+  The popup reads the text once, puts it in the box if it is a link, and keeps nothing.
 - **Copy details**: after an error, this button copies the versions, your operating system and
   browser version, which engine was used (the browser or the helper), the error code, HTTP status,
   the host name and the technical error text to your clipboard. Web addresses are cut down to their

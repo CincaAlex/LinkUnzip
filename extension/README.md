@@ -83,6 +83,7 @@ points. The store assigns its own extension id: add it with
 | `downloads.ui` | hides Chrome's download bubble while a job saves many files into Downloads (it would pop up for every file) |
 | `scripting` + `activeTab` | list the `.zip` links on the page you are looking at |
 | `nativeMessaging` | talk to the optional helper, if it is installed |
+| `clipboardRead`, optional (from 1.4.0) | nothing at install. Asked the first time you click *Paste* next to the link box, which then reads the copied link once; nothing is stored or sent |
 | sites, optional (`optional_host_permissions: <all_urls>`) | nothing at install. Chrome asks for a site the first time you use a link there, or once for every site if you allow that on the setup page or in Settings |
 
 Everything stays on your machine: the extension talks only to the server of the zip you chose (and

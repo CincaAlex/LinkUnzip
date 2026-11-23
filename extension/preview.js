@@ -85,6 +85,13 @@ const counted = (body, info) =>
     }),
   );
 
+// Every answer, errors too: the type given is the one used, and nothing in it may run, even when
+// it is opened on its own in a tab. Chrome's PDF viewer and the <video>/<audio> players work
+// with this.
+const LOCKED = { "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'" };
+
+const textAnswer = (text, status) => new Response(text, { status, headers: { ...LOCKED, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+
 /** The worker's fetch handler: answers the preview addresses, leaves everything else alone. */
 export function handlePreviewFetch(event) {
   const url = new URL(event.request.url);
@@ -94,9 +101,9 @@ export function handlePreviewFetch(event) {
 
 async function answer(request, token) {
   const info = await lookup(token);
-  if (!info) return new Response("This preview is no longer open. Open it again from LinkUnzip.", { status: 404 });
+  if (!info) return textAnswer("This preview is no longer open. Open it again from LinkUnzip.", 404);
   const { entry } = info;
-  const headers = { "Content-Type": info.mime, "Cache-Control": "no-store", "Accept-Ranges": "bytes" };
+  const headers = { ...LOCKED, "Content-Type": info.mime, "Cache-Control": "no-store", "Accept-Ranges": "bytes" };
   const range = parseRange(request.headers.get("range"), entry.usize);
   if (range === "bad") return new Response(null, { status: 416, headers: { ...headers, "Content-Range": `bytes */${entry.usize}` } });
   const [start, end] = range || [0, entry.usize - 1];
@@ -117,6 +124,6 @@ async function answer(request, token) {
     });
     return new Response(body, part);
   } catch (e) {
-    return new Response(`LinkUnzip couldn't read this file from the zip: ${e?.message || e}`, { status: 502 });
+    return textAnswer(`LinkUnzip couldn't read this file from the zip: ${e?.message || e}`, 502);
   }
 }

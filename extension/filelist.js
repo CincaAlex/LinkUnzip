@@ -1,23 +1,42 @@
-// "Choose files" in the ready view: browse the zip's folders, tick what to extract, search by name
-// or pattern (`*.jpg`) and see live totals. popup.js shows it when the engine has `list` and
-// `select`; `search` and `measure` add the search box and the totals.
+// "Choose files" in the ready view: the zip as a tree whose folders open in place, a tick on every
+// file and folder, search by name or pattern (`*.jpg`), a filter by type and live totals.
 //
 // The selection is kept as marks: path -> ticked or not, where a path is a file, a folder ending
 // in "/", or "" for the whole zip, and every entry follows its nearest marked parent. The engine
 // gets the marks as they are (`select: {marks}`) and applies the same rule, so any mix of ticks
 // can be said, however big the folders.
 //
-// Folders can hold 100,000+ files (COCO), so at most WINDOW rows are ever on the page, fetched a
-// page at a time.
+// Folders can hold 100,000+ files (COCO), so a folder's contents come a page at a time, and only
+// the folders that are open are on the page.
 
 import { h } from "./dom.js";
-import { humanBytes } from "./fmt.js";
+import { extensionOf, humanBytes, parentOf, safeName } from "./fmt.js";
 import { num, t, tn } from "./i18n.js";
 
 const PAGE = 500;
-const WINDOW = 2000; // rows on the page at most: "Show more" past that lets go of the first ones
-/** File types offered as search chips (the most common ones in the zip). */
-const CHIPS = 4;
+
+/** What a file is, by its type: the mark before its name, and the filter's kinds. */
+const TYPES = {
+  image: "jpg jpeg png gif webp bmp tif tiff svg heic avif ico",
+  video: "mp4 mov mkv webm avi m4v",
+  audio: "mp3 wav flac ogg m4a aac",
+  pdf: "pdf",
+  doc: "txt md doc docx odt rtf epub tex rst log html htm ppt pptx odp",
+  data: "csv tsv json jsonl ndjson xml yaml yml parquet npy npz h5 hdf5 sqlite db arrow feather pkl xls xlsx ods tfrecord",
+  code: "js mjs ts jsx tsx py rs go c h cpp hpp java cs rb php sh ps1 bat css kt swift lua",
+  archive: "zip 7z rar tar gz tgz bz2 xz zst jar apk whl",
+  app: "exe dll msi so dylib",
+};
+const typeByExt = new Map(Object.entries(TYPES).flatMap(([type, exts]) => exts.split(" ").map((e) => [e, type])));
+const typeOf = (path) => typeByExt.get(extensionOf(path)) || "file";
+const extsOf = (...types) => types.flatMap((type) => TYPES[type].split(" "));
+
+/** The type filter. A kind is offered when one of the zip's most common types is in it. */
+const KINDS = [
+  { key: "media", label: () => t("Media"), exts: extsOf("image", "video", "audio") },
+  { key: "docs", label: () => t("Docs"), exts: extsOf("pdf", "doc") },
+  { key: "data", label: () => t("Data"), exts: extsOf("data") },
+];
 
 // ---------------------------------------------------------------------------------------
 // The selection
@@ -25,14 +44,6 @@ const CHIPS = 4;
 
 const isFolder = (path) => path === "" || path.endsWith("/");
 const depth = (path) => path.split("/").filter(Boolean).length;
-
-/** "a/b/c.txt" -> "a/b/", "a/b/" -> "a/", "a/" -> "", and "" (the whole zip) -> null. */
-export function parentOf(path) {
-  if (path === "") return null;
-  const trimmed = path.endsWith("/") ? path.slice(0, -1) : path;
-  const i = trimmed.lastIndexOf("/");
-  return i < 0 ? "" : trimmed.slice(0, i + 1);
-}
 
 /** Strictly inside a folder ("" = the whole zip). */
 function inside(path, folder) {
@@ -83,57 +94,71 @@ export function toSelect(marks) {
 const fileCount = (n) => tn("{count} file", "{count} files", n);
 const matchCount = (n) => tn("{count} match", "{count} matches", n);
 const norm = (item) => (item.dir && !item.path.endsWith("/") ? { ...item, path: `${item.path}/` } : item);
+const ARIA_CHECKED = { on: "true", off: "false", mixed: "mixed" };
 
 /**
  * `api.list(dir, offset, limit)`, `api.search(query)`, `api.measure(select)` and
  * `api.tickMatches(marks, query, ticked)` answer like the background commands; `onChange(selection)`
  * hears every change (selection as from toSelect, plus `measured` once known). `draft` keeps the
- * marks, folder and search across popup reopens.
+ * marks, the open folders and the search across popup reopens (`save()` after it changes).
+ * `announce(text)` tells screen readers about a problem shown in the list's notice.
  */
-export function fileList({ job, draft, features, api, onChange, actions = [], toolbar = null }) {
+export function fileList({ job, draft, features, api, onChange, save = () => {}, actions = [], toolbar = null, announce = () => {} }) {
   const report = job.report;
   const marks = (draft.marks ??= {});
-  const st = { dir: draft.dir || "", query: draft.query || "", start: 0, items: [], total: 0, focus: 0 };
-  let rootListing = report.root_dirs ? (Array.isArray(report.root_dirs) ? { total: report.root_dirs.length, items: report.root_dirs } : report.root_dirs) : null;
+  const open = new Set(draft.open || []);
+  const kinds = KINDS.filter((k) => (report.extensions || []).some((e) => k.exts.includes(e.ext)));
+  const st = { kind: kinds.some((k) => k.key === draft.kind) ? draft.kind : "", results: null, focus: null };
+  // Each folder's entries as far as loaded: dir -> { items, total }. The root's first page comes
+  // with the report.
+  const loaded = new Map();
+  const root = report.root_dirs;
+  if (root) {
+    const listing = Array.isArray(root) ? { total: root.length, items: root } : root;
+    loaded.set("", { total: listing.total, items: listing.items.map(norm) });
+  }
+  const itemOf = new WeakMap(); // tree row -> its entry
 
   const summary = h("span", { class: "fl-sum" }, t("All files"));
+  const totals = h("span", { class: "fl-totals", role: "status", "aria-live": "polite" });
   const search = features.search
     ? h("input", { type: "search", class: "fl-search", placeholder: t("Filter or *.jpg"), "aria-label": t("Filter: search file names in the zip, or a pattern like *.jpg"), spellcheck: "false" })
     : null;
-  if (search) search.value = st.query;
-  // One click to every file of a common type: "*.jpg" as the search.
-  const types = (report.extensions || []).slice(0, CHIPS);
-  const chips =
-    search && types.length >= 2
-      ? h(
-          "div",
-          { class: "fl-chips", role: "group", "aria-label": t("Find files of one type") },
-          ...types.map(({ ext, files }) =>
-            h("button", { type: "button", class: "chip-btn", "data-q": `*.${ext}`, title: tn("{count} .{ext} file", "{count} .{ext} files", files, { ext }), "aria-pressed": "false" }, `*.${ext}`),
-          ),
-        )
-      : null;
-  const crumbs = h("nav", { class: "fl-crumbs", "aria-label": t("Folder") });
+  if (search) search.value = draft.query || "";
+  // All, Media, Docs, Data: one at a time, so a radio group.
+  const kindBtns = kinds.length
+    ? [{ key: "", label: () => t("All") }, ...kinds].map((k) =>
+        h("button", { type: "button", role: "radio", "data-kind": k.key, "aria-checked": String(st.kind === k.key), tabindex: st.kind === k.key ? "0" : "-1" }, k.label()),
+      )
+    : [];
+  const kindGroup = kindBtns.length ? h("div", { class: "fl-kinds", role: "radiogroup", "aria-label": t("Find files of one type") }, ...kindBtns) : null;
+  const zipSize = h("span", { class: "fl-zip" }, `${fileCount(report.files)} · ${humanBytes(report.extracted)}`);
   const count = h("span", { class: "fl-count" });
   const allBtn = h("button", { type: "button", class: "link small" }, t("Select all"));
   const noneBtn = h("button", { type: "button", class: "link small" }, t("Select none"));
-  const earlier = h("button", { type: "button", class: "btn fl-more", hidden: true }, t("Show earlier"));
-  const more = h("button", { type: "button", class: "btn fl-more", hidden: true }, t("Show more"));
-  const rows = h("div", { class: "fl-rows", role: "group", "aria-label": t("Files and folders. Arrow keys move, Space ticks, Enter opens a folder, Backspace goes up.") });
+  const helpId = `fl-help-${job.id}`;
+  const help = h(
+    "p",
+    { id: helpId, class: "sr-only" },
+    features.preview || features.inner
+      ? t("Arrow keys move, Right opens a folder and Left closes it, Space ticks, Enter opens a zip in the zip, Enter or P previews a file.")
+      : t("Arrow keys move, Right opens a folder and Left closes it, Space ticks."),
+  );
+  const tree = h("div", { class: "fl-tree", role: "tree", "aria-label": t("File List"), "aria-describedby": helpId });
   const notice = h("p", { class: "notice", hidden: true });
-  const totals = h("span", { class: "fl-totals", role: "status", "aria-live": "polite" });
-  // Where you are and how many: only needed inside a folder, in search results or across pages.
-  const nav = h("div", { class: "fl-nav" }, crumbs, count);
+  // Search results: how many, and Select all / none for every match.
+  const nav = h("div", { class: "fl-nav", hidden: true }, count, h("span", { class: "fl-actions" }, allBtn, noneBtn));
   const box = h(
     "section",
     { class: "fl", "aria-label": t("File List") },
-    h("div", { class: "fl-head" }, h("h2", {}, `${t("File List")} `, h("span", {}, t("(Select files for extraction)"))), search),
-    chips,
+    search ? h("div", { class: "fl-head" }, search) : null,
+    h("div", { class: "fl-bar" }, kindGroup, zipSize),
     toolbar,
     nav,
     notice,
-    h("div", { class: "fl-box" }, h("div", { class: "fl-scroll" }, earlier, rows, more)),
-    h("div", { class: "fl-foot" }, h("p", {}, summary, " · ", totals), h("span", { class: "fl-actions" }, allBtn, noneBtn, ...actions)),
+    help,
+    h("div", { class: "fl-box" }, h("div", { class: "fl-scroll" }, tree)),
+    h("div", { class: "fl-foot" }, h("p", { class: "fl-sel" }, summary, totals), h("span", { class: "fl-actions" }, ...actions)),
   );
 
   // ---- loading ------------------------------------------------------------------------------
@@ -143,183 +168,259 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     return null;
   }
 
-  async function listPage(dir, offset, limit) {
-    if (dir === "" && offset === 0 && rootListing && limit <= PAGE) return rootListing;
-    const r = await api.list(dir, offset, limit);
-    return r?.ok ? r.listing : failed(r);
+  async function listPage(dir, offset) {
+    const r = await api.list(dir, offset, PAGE);
+    return r?.ok ? { total: r.listing.total, items: r.listing.items.map(norm) } : failed(r);
   }
 
-  async function showFolder(dir, offset = 0) {
-    const page = await listPage(dir, offset, PAGE);
-    if (!page) return;
-    Object.assign(st, { dir, query: "", start: offset, items: page.items.map(norm), total: page.total, focus: 0 });
-    if (dir === "") rootListing = rootListing || page;
-    draft.dir = dir;
-    draft.query = "";
-    if (search) search.value = "";
-    draw();
-  }
-
-  async function showMore() {
-    const page = await listPage(st.dir, st.start + st.items.length, PAGE);
-    if (!page) return;
-    const first = st.items.length;
-    st.items.push(...page.items.map(norm));
-    st.focus = first;
-    if (st.items.length > WINDOW) {
-      const drop = st.items.length - WINDOW;
-      st.items.splice(0, drop);
-      st.start += drop;
-      st.focus -= drop;
+  /** Fill a folder's rows (`li` null: the top of the zip), then the folders open inside it. */
+  async function fill(li, dir, level) {
+    let page = loaded.get(dir);
+    if (!page) {
+      page = await listPage(dir, 0);
+      if (!page) return;
+      loaded.set(dir, page);
     }
-    draw(true);
+    const kids = li ? li.querySelector(":scope > .fl-kids") : tree;
+    kids.replaceChildren(...page.items.map((item) => node(item, level)));
+    if (!page.items.length) kids.append(h("p", { class: "fl-empty" }, t("This folder is empty.")));
+    moreButton(kids, dir, page, level);
+    refreshTicks(kids);
+    if (!st.focus || !st.focus.isConnected) setFocus(kids.querySelector("[role=treeitem]"), false);
+    for (const child of kids.children) {
+      const item = itemOf.get(child);
+      if (item?.dir && open.has(item.path)) {
+        child.setAttribute("aria-expanded", "true");
+        await fill(child, item.path, level + 1);
+      }
+    }
   }
 
-  async function showEarlier() {
-    const from = Math.max(0, st.start - PAGE);
-    const page = await listPage(st.dir, from, st.start - from);
-    if (!page) return;
-    st.items.unshift(...page.items.map(norm));
-    st.start = from;
-    st.items.length = Math.min(st.items.length, WINDOW);
-    st.focus = 0;
-    draw(true);
-  }
-
-  let searchTimer = null;
-  async function runSearch() {
-    const query = search.value.trim();
-    draft.query = query;
-    if (!query) return showFolder(st.dir);
-    const r = await api.search(query);
-    if (search.value.trim() !== query) return; // a newer search is on its way
-    if (!r?.ok) return failed(r);
-    Object.assign(st, { query, start: 0, items: r.results.items.map(norm), total: r.results.total, focus: 0 });
-    draw();
+  /** "Show more" at the end of a folder that has more than one page. */
+  function moreButton(kids, dir, page, level) {
+    if (page.items.length >= page.total) return;
+    const btn = h("button", { type: "button", class: "btn fl-more" }, t("Show more"));
+    btn.addEventListener("click", async () => {
+      const next = await listPage(dir, page.items.length);
+      if (!next) return;
+      page.items.push(...next.items);
+      const rows = next.items.map((item) => node(item, level));
+      btn.before(...rows);
+      if (page.items.length >= page.total) btn.remove();
+      refreshTicks(kids);
+      setFocus(rows[0]);
+    });
+    kids.append(btn);
   }
 
   // ---- drawing ------------------------------------------------------------------------------
 
-  function crumb(label, dir, current) {
-    return h("button", { type: "button", class: "link", "aria-current": current ? "location" : null, onclick: () => showFolder(dir) }, label);
-  }
-
-  function draw(keepFocus = false) {
-    notice.hidden = true;
-    if (st.query) {
-      // Search covers the whole zip; the way back leads to the folder that was open.
-      const back = st.dir ? st.dir.split("/").filter(Boolean).pop() : t("All files");
-      crumbs.replaceChildren(crumb(back, st.dir, false), h("span", { class: "sep", "aria-hidden": "true" }, "›"), h("span", {}, t("Search results")));
-      const matches = matchCount(st.total);
-      count.textContent = st.total > st.items.length ? t("first {shown} of {matches}", { shown: num(st.items.length), matches }) : matches;
-    } else {
-      const parts = st.dir.split("/").filter(Boolean);
-      const nodes = [crumb(t("All files"), "", parts.length === 0)];
-      parts.forEach((part, i) => {
-        nodes.push(h("span", { class: "sep", "aria-hidden": "true" }, "›"), crumb(part, `${parts.slice(0, i + 1).join("/")}/`, i === parts.length - 1));
-      });
-      crumbs.replaceChildren(...nodes);
-      const shown = st.items.length < st.total ? ` · ${t("showing {from}-{to}", { from: num(st.start + 1), to: num(st.start + st.items.length) })}` : "";
-      count.textContent = `${tn("{count} item", "{count} items", st.total)}${shown}`;
-    }
-    earlier.hidden = Boolean(st.query) || st.start === 0;
-    more.hidden = Boolean(st.query) || st.start + st.items.length >= st.total;
-    nav.hidden = !st.query && st.dir === "" && st.start === 0 && st.items.length >= st.total;
-    const keys = Object.keys(marks);
-    rows.replaceChildren(...st.items.map((item, i) => row(item, i, keys)));
-    if (!st.items.length) rows.append(h("p", { class: "fl-empty" }, st.query ? t("No file names match.") : t("This folder is empty.")));
-    if (keepFocus) focusRow(st.focus);
-    // In search results, Select all / none cover every match, not only the rows on the page.
-    const wide = Boolean(st.query) && features.tickMatches && st.total > 0;
-    allBtn.textContent = wide ? t("Select all {count}", { count: num(st.total) }) : t("Select all");
-    allBtn.title = wide ? t("Tick every file the search finds ({matches})", { matches: matchCount(st.total) }) : "";
-    noneBtn.title = wide ? t("Untick every file the search finds") : "";
-    if (chips) for (const b of chips.children) b.setAttribute("aria-pressed", String(b.dataset.q === st.query));
-  }
-
-  function row(item, i, keys) {
-    const state = tickState(marks, keys, item.path);
-    const id = `fl-${i}`;
-    const cb = h("input", { type: "checkbox", id, "data-i": String(i), tabindex: i === st.focus ? "0" : "-1" });
-    cb.checked = state === "on";
-    cb.indeterminate = state === "mixed";
+  function node(item, level) {
+    const name = safeName(item.name);
     const size = item.dir ? `${fileCount(item.files ?? 0)} · ${humanBytes(item.size)}` : humanBytes(item.size);
-    cb.setAttribute("aria-label", item.dir ? t("{name}, folder, {size}", { name: item.name, size }) : `${item.name}, ${size}`);
-    const name = item.dir
-      ? h("button", { type: "button", class: "fl-name dir", tabindex: "-1", title: t("Open the folder"), onclick: () => showFolder(item.path) }, `${item.name}/`)
-      : h("label", { class: "fl-name", for: id }, item.name);
-    return h(
+    const row = h(
       "div",
-      { class: `fl-row${state === "off" ? " off" : ""}` },
-      cb,
-      h("span", { class: `fl-icon${item.dir ? " dir" : ""}`, "aria-hidden": "true" }),
+      { class: `fl-row${item.dir ? " dir" : ""}` },
+      item.dir && !st.results ? h("span", { class: "fl-twist", "aria-hidden": "true" }) : null,
+      h("span", { class: "fl-tick", "aria-hidden": "true" }),
+      h("span", { class: "fl-type", "data-type": item.dir ? "folder" : typeOf(item.path), "aria-hidden": "true" }),
       h(
         "span",
         { class: "fl-main" },
-        name,
-        st.query ? h("span", { class: "fl-path" }, parentOf(item.path)) : null,
+        h("span", { class: "fl-name" }, name),
+        st.results ? h("span", { class: "fl-path" }, safeName(parentOf(item.path))) : null,
         item.unsupported ? h("span", { class: "fl-tag", title: t("LinkUnzip can't extract this file") }, item.unsupported) : null,
         item.locked ? h("span", { class: "fl-tag quiet", title: t("Password-protected: LinkUnzip asks for the password before it extracts") }, t("password")) : null,
       ),
-      h("span", { class: "fl-size" }, size),
+      item.dir ? h("span", { class: "fl-n", "aria-hidden": "true" }, num(item.files ?? 0)) : null,
+      h("span", { class: "fl-size", "aria-hidden": "true" }, humanBytes(item.size)),
       rowAction(item),
     );
+    const li = h(
+      "div",
+      {
+        class: "fl-node",
+        role: "treeitem",
+        tabindex: "-1",
+        "aria-level": String(level),
+        "aria-label": item.dir ? t("{name}, folder, {size}", { name, size }) : `${name}, ${size}`,
+      },
+      row,
+    );
+    if (item.dir && !st.results) {
+      li.setAttribute("aria-expanded", "false");
+      li.append(h("div", { class: "fl-kids", role: "group" }));
+    }
+    itemOf.set(li, item);
+    return li;
+  }
+
+  /** What a file row offers: "open" for a zip inside the zip, "preview", or null. */
+  function actionOf(item) {
+    if (item.dir || item.unsupported) return null;
+    if (features.inner && /\.zip$/i.test(item.name)) return "open";
+    return features.preview ? "preview" : null;
   }
 
   /** The button at the end of a file row: Open for a zip inside the zip, else Preview. */
   function rowAction(item) {
-    if (item.dir || item.unsupported) return null;
-    if (features.inner && /\.zip$/i.test(item.name)) {
-      return h("button", { type: "button", class: "fl-open", tabindex: "-1", title: t("Open {name}: its own file list", { name: item.name }), "aria-label": t("Open {name}", { name: item.name }), onclick: () => api.open(item.path) });
+    const action = actionOf(item);
+    const name = safeName(item.name);
+    if (action === "open") {
+      return h("button", { type: "button", class: "fl-open", tabindex: "-1", title: t("Open {name}: its own file list", { name }), "aria-label": t("Open {name}", { name }), onclick: () => api.open(item.path) });
     }
-    if (!features.preview) return null;
-    return h("button", { type: "button", class: "fl-peek", tabindex: "-1", title: t("Preview {name}", { name: item.name }), "aria-label": t("Preview {name}", { name: item.name }), onclick: () => api.preview(item.path) });
+    if (action !== "preview") return null;
+    return h("button", { type: "button", class: "fl-peek", tabindex: "-1", title: t("Preview {name}", { name }), "aria-label": t("Preview {name}", { name }), onclick: () => api.preview(item.path) });
   }
 
-  /** Update the ticks in place (no rebuild: focus and scroll stay where they are). */
-  function refreshTicks() {
+  /** Every row on the page in reading order, skipping those inside closed folders. */
+  function visibleRows() {
+    const out = [];
+    const walk = (parent) => {
+      for (const li of parent.children) {
+        if (li.getAttribute("role") !== "treeitem") continue;
+        out.push(li);
+        if (li.getAttribute("aria-expanded") === "true") walk(li.querySelector(":scope > .fl-kids"));
+      }
+    };
+    walk(tree);
+    return out;
+  }
+
+  /** The one row Tab lands on (roving focus); `move` also focuses it. */
+  function setFocus(li, move = true) {
+    if (!li) return;
+    if (st.focus && st.focus !== li) st.focus.tabIndex = -1;
+    st.focus = li;
+    li.tabIndex = 0;
+    if (move) {
+      li.focus({ preventScroll: true });
+      li.querySelector(":scope > .fl-row").scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  async function setOpen(li, want) {
+    const item = itemOf.get(li);
+    if (!item?.dir || st.results) return;
+    li.setAttribute("aria-expanded", String(want));
+    if (want) open.add(item.path);
+    else open.delete(item.path);
+    draft.open = [...open];
+    save();
+    const kids = li.querySelector(":scope > .fl-kids");
+    if (want && !kids.childElementCount) await fill(li, item.path, Number(li.getAttribute("aria-level")) + 1);
+  }
+
+  /** Ticks drawn again in place (no rebuild: focus and scroll stay where they are). */
+  function refreshTicks(scope = tree) {
     const keys = Object.keys(marks);
-    for (const cb of rows.querySelectorAll("input[type=checkbox]")) {
-      const state = tickState(marks, keys, st.items[cb.dataset.i].path);
-      cb.checked = state === "on";
-      cb.indeterminate = state === "mixed";
-      cb.closest(".fl-row").classList.toggle("off", state === "off");
+    for (const li of scope.querySelectorAll("[role=treeitem]")) {
+      const state = tickState(marks, keys, itemOf.get(li).path);
+      li.setAttribute("aria-checked", ARIA_CHECKED[state]);
+      li.classList.toggle("off", state === "off");
     }
   }
 
-  function focusRow(i) {
-    const boxes = rows.querySelectorAll("input[type=checkbox]");
-    if (!boxes.length) return;
-    st.focus = Math.max(0, Math.min(boxes.length - 1, i));
-    boxes.forEach((b, j) => (b.tabIndex = j === st.focus ? 0 : -1));
-    boxes[st.focus].focus();
-    boxes[st.focus].scrollIntoView({ block: "nearest" });
+  /** The tree of the zip again, as it was left (after a search is cleared). */
+  async function showTree() {
+    st.results = null;
+    tree.classList.remove("flat");
+    nav.hidden = true;
+    tree.replaceChildren();
+    st.focus = null;
+    await fill(null, "", 1);
+  }
+
+  function showResults() {
+    const { items, total } = st.results;
+    tree.classList.add("flat");
+    st.focus = null;
+    tree.replaceChildren(...items.map((item) => node(item, 1)));
+    if (!items.length) tree.append(h("p", { class: "fl-empty" }, t("No file names match.")));
+    refreshTicks();
+    setFocus(tree.querySelector("[role=treeitem]"), false);
+    nav.hidden = false;
+    const matches = matchCount(total);
+    count.textContent = total > items.length ? t("first {shown} of {matches}", { shown: num(items.length), matches }) : matches;
+    // Select all / none cover every match, not only the rows on the page.
+    const wide = features.tickMatches && total > 0;
+    allBtn.textContent = wide ? t("Select all {count}", { count: num(total) }) : t("Select all");
+    allBtn.title = wide ? t("Tick every file the search finds ({matches})", { matches }) : "";
+    noneBtn.title = wide ? t("Untick every file the search finds") : "";
   }
 
   function showNotice(text) {
     notice.textContent = text;
     notice.hidden = false;
+    announce(text);
+  }
+
+  // ---- search -------------------------------------------------------------------------------
+
+  /** The search as the engine takes it: the type filter first (`ext:jpg,png`), then the words. */
+  function query() {
+    const words = search ? search.value.trim() : "";
+    const kind = kinds.find((k) => k.key === st.kind);
+    return kind ? `ext:${kind.exts.join(",")} ${words}`.trim() : words;
+  }
+
+  let searchTimer = null;
+  async function runSearch() {
+    notice.hidden = true;
+    const q = query();
+    draft.query = search ? search.value.trim() : "";
+    draft.kind = st.kind;
+    save();
+    if (!q) return showTree();
+    const r = await api.search(q);
+    if (query() !== q) return; // a newer search is on its way
+    if (!r?.ok) return failed(r);
+    st.results = { query: q, total: r.results.total, items: r.results.items.map(norm) };
+    showResults();
+  }
+
+  function chooseKind(btn, move = false) {
+    st.kind = btn.dataset.kind;
+    for (const b of kindBtns) {
+      const on = b === btn;
+      b.setAttribute("aria-checked", String(on));
+      b.tabIndex = on ? 0 : -1;
+    }
+    if (move) btn.focus();
+    clearTimeout(searchTimer);
+    runSearch();
   }
 
   // ---- ticking ------------------------------------------------------------------------------
 
   function tick(paths, ticked) {
     for (const p of paths) setTicked(marks, p, ticked);
-    // Every entry of this folder ticked the same way one by one: say it with the folder itself.
-    if (!st.query && st.start === 0 && st.items.length === st.total && st.items.length) {
-      const keys = Object.keys(marks);
-      const states = new Set(st.items.map((it) => tickState(marks, keys, it.path)));
-      if (states.size === 1 && !states.has("mixed")) setTicked(marks, st.dir, states.has("on"));
-    }
+    // A folder whose entries are now all ticked the same way says it with the folder itself.
+    if (!st.results) for (const p of paths) settle(parentOf(p));
     refreshTicks();
     changed();
   }
 
+  function settle(dir) {
+    const keys = Object.keys(marks);
+    for (; dir !== null; dir = parentOf(dir)) {
+      const page = loaded.get(dir);
+      if (!page || !page.items.length || page.items.length < page.total) return;
+      const states = new Set(page.items.map((it) => tickState(marks, keys, it.path)));
+      if (states.size !== 1 || states.has("mixed")) return;
+      setTicked(marks, dir, states.has("on"));
+    }
+  }
+
+  function toggle(li) {
+    tick([itemOf.get(li).path], li.getAttribute("aria-checked") !== "true");
+  }
+
   /** Select all / none in search results: every match, worked out by the engine. */
   async function tickAllMatches(ticked) {
-    const query = st.query;
-    const r = await api.tickMatches({ ...marks }, query, ticked);
-    if (st.query !== query) return;
+    const q = st.results.query;
+    const r = await api.tickMatches({ ...marks }, q, ticked);
+    if (st.results?.query !== q) return;
     if (!r?.ok) return failed(r);
     for (const k of Object.keys(marks)) delete marks[k];
     Object.assign(marks, r.marks);
@@ -327,51 +428,78 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     changed();
   }
 
-  const selectAll = (ticked) => {
-    if (st.query && features.tickMatches) return tickAllMatches(ticked);
-    tick(st.query ? st.items.map((it) => it.path) : [st.dir], ticked);
-  };
+  /** Every file of the zip, or every match while searching. */
+  function selectAll(ticked) {
+    if (st.results && features.tickMatches) return tickAllMatches(ticked);
+    tick(st.results ? st.results.items.map((it) => it.path) : [""], ticked);
+  }
 
-  rows.addEventListener("change", (e) => {
-    const i = e.target.dataset?.i;
-    if (i !== undefined) {
-      st.focus = Number(i);
-      tick([st.items[i].path], e.target.checked);
-    }
+  // ---- events -------------------------------------------------------------------------------
+
+  tree.addEventListener("click", (e) => {
+    const li = e.target.closest("[role=treeitem]");
+    if (!li || e.target.closest("button")) return;
+    setFocus(li, false);
+    li.focus({ preventScroll: true });
+    // A folder's row opens it; its tick box, and anywhere on a file's row, ticks.
+    if (li.hasAttribute("aria-expanded") && !e.target.closest(".fl-tick")) setOpen(li, li.getAttribute("aria-expanded") !== "true");
+    else toggle(li);
   });
 
-  rows.addEventListener("keydown", (e) => {
-    if (e.target.type !== "checkbox") return;
-    const i = Number(e.target.dataset.i);
-    const item = st.items[i];
+  tree.addEventListener("keydown", (e) => {
+    const li = e.target;
+    if (li.getAttribute?.("role") !== "treeitem") return;
+    const item = itemOf.get(li);
+    const rows = visibleRows();
+    const i = rows.indexOf(li);
+    const expanded = li.getAttribute("aria-expanded") === "true";
     switch (e.key) {
       case "ArrowDown":
-        focusRow(i + 1);
+        setFocus(rows[i + 1] || li);
         break;
       case "ArrowUp":
-        focusRow(i - 1);
+        setFocus(rows[i - 1] || li);
         break;
       case "PageDown":
-        focusRow(i + 10);
+        setFocus(rows[Math.min(rows.length - 1, i + 10)]);
         break;
       case "PageUp":
-        focusRow(i - 10);
+        setFocus(rows[Math.max(0, i - 10)]);
         break;
       case "Home":
-        focusRow(0);
+        setFocus(rows[0]);
         break;
       case "End":
-        focusRow(st.items.length - 1);
+        setFocus(rows[rows.length - 1]);
+        break;
+      case "ArrowRight":
+        if (!li.hasAttribute("aria-expanded")) return;
+        if (!expanded) setOpen(li, true);
+        else setFocus(li.querySelector(":scope > .fl-kids > [role=treeitem]"));
+        break;
+      case "ArrowLeft":
+      case "Backspace":
+        if (expanded && e.key === "ArrowLeft") setOpen(li, false);
+        else {
+          const up = li.parentElement.closest("[role=treeitem]");
+          if (!up) return;
+          setFocus(up);
+        }
+        break;
+      case " ":
+        toggle(li);
         break;
       case "Enter":
-      case "ArrowRight":
-        if (!item.dir) return;
-        showFolder(item.path).then(() => focusRow(0));
+        if (e.isComposing) return;
+        if (li.hasAttribute("aria-expanded")) setOpen(li, !expanded);
+        else if (actionOf(item) === "open") api.open(item.path);
+        else if (actionOf(item) === "preview") api.preview(item.path);
+        else return;
         break;
-      case "Backspace":
-      case "ArrowLeft":
-        if (st.query || st.dir === "") return;
-        showFolder(parentOf(st.dir)).then(() => focusRow(0));
+      case "p":
+      case "P":
+        if (e.ctrlKey || e.metaKey || e.altKey || actionOf(item) !== "preview") return;
+        api.preview(item.path);
         break;
       default:
         return;
@@ -379,18 +507,37 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     e.preventDefault();
   });
 
+  // The folder whose rows the pointer or focus is in: its line darkens, so you see where it ends.
+  let hot = null;
+  const heat = (target) => {
+    const li = target?.closest?.("[role=treeitem]");
+    const folder = !li ? null : li.hasAttribute("aria-expanded") ? li : li.parentElement.closest("[role=treeitem]");
+    if (folder === hot) return;
+    hot?.classList.remove("hot");
+    hot = folder;
+    hot?.classList.add("hot");
+  };
+  tree.addEventListener("mouseover", (e) => heat(e.target));
+  tree.addEventListener("mouseleave", () => heat(st.focus && tree.contains(document.activeElement) ? document.activeElement : null));
+  tree.addEventListener("focusin", (e) => {
+    if (e.target.getAttribute?.("role") === "treeitem") setFocus(e.target, false);
+    heat(e.target);
+  });
+  tree.addEventListener("focusout", (e) => !tree.contains(e.relatedTarget) && heat(null));
+
   allBtn.addEventListener("click", () => selectAll(true));
   noneBtn.addEventListener("click", () => selectAll(false));
-  chips?.addEventListener("click", (e) => {
-    const q = e.target.closest?.("button")?.dataset.q;
-    if (!q) return;
-    // The same chip again clears the search.
-    search.value = st.query === q ? "" : q;
-    clearTimeout(searchTimer);
-    runSearch();
+  kindGroup?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[role=radio]");
+    if (btn) chooseKind(btn);
   });
-  more.addEventListener("click", showMore);
-  earlier.addEventListener("click", showEarlier);
+  kindGroup?.addEventListener("keydown", (e) => {
+    const i = kindBtns.indexOf(e.target);
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (i < 0 || !step) return;
+    e.preventDefault();
+    chooseKind(kindBtns[(i + step + kindBtns.length) % kindBtns.length], true);
+  });
   search?.addEventListener("input", () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(runSearch, 300);
@@ -398,7 +545,7 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
   search?.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      focusRow(0);
+      setFocus(st.focus || visibleRows()[0]);
     }
   });
 
@@ -450,8 +597,8 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
       return;
     }
     if (JSON.stringify(toSelect(marks)) !== JSON.stringify(sel)) return; // ticked meanwhile: its own measure() follows
-    // Nothing left under the ticks (Select none inside the zip's only folder): say it with the zip
-    // itself, so the totals read "No files" and a file ticked next is sayable as `select`.
+    // Nothing left under the ticks (every file of the zip's only folder unticked): say it with the
+    // zip itself, so the totals read "No files" and a file ticked next is sayable as `select`.
     if (r.measured.files === 0) {
       for (const k of Object.keys(marks)) delete marks[k];
       marks[""] = false;
@@ -464,10 +611,27 @@ export function fileList({ job, draft, features, api, onChange, actions = [], to
     onChange({ ...sel, measured: r.measured });
   }
 
-  // The list is always shown: open where the user left it (folder or search).
-  if (st.query && search) runSearch();
-  else showFolder(st.dir);
+  // The list is always shown: open where the user left it (open folders, or the search).
+  if (query()) runSearch();
+  else showTree();
   changed();
 
-  return { el: box, selection: () => toSelect(marks) };
+  return {
+    el: box,
+    selection: () => toSelect(marks),
+    /** Every file of the zip ticked or unticked (every match while searching). */
+    selectAll,
+    /** Where the list is: the folder of the focused row, and the search (for Sample and the image grid). */
+    where: () => {
+      const item = !st.results && st.focus ? itemOf.get(st.focus) : null;
+      return { dir: !item ? "" : item.dir ? item.path : parentOf(item.path), query: st.results?.query || "" };
+    },
+    /** Ticks set from elsewhere (a random sample, a shared link): replace them all. */
+    setMarks(next) {
+      for (const k of Object.keys(marks)) delete marks[k];
+      Object.assign(marks, next);
+      refreshTicks();
+      changed();
+    },
+  };
 }

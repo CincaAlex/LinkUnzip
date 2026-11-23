@@ -13,10 +13,10 @@
 
 import { crc32 } from "./crc32.js";
 import { checksCrc } from "./crypto.js";
-import { checkPassword, decryptorFor, entryChunks, seekToData } from "./entry.js";
-import { Coded, failed, isTransient } from "./errors.js";
+import { checkEnd, checkGrowth, checkPassword, decryptorFor, entryChunks, seekToData } from "./entry.js";
+import { Coded, isTransient } from "./errors.js";
 import { check, dropTop, splitSpans, wrappingFolder } from "./plan.js";
-import { ByteReader, RETRY, delayAfter, sleep } from "./source.js";
+import { ByteReader, RETRY, delayAfter, normalizeEtag, sleep } from "./source.js";
 import { METHOD_STORED, needsPassword } from "./zip.js";
 
 const PROGRESS_MS = 250;
@@ -112,7 +112,7 @@ async function alreadyDone(sink, file, signal, journalOnly = false) {
 const identityOf = (src) => ({
   v: 1,
   size: src.size,
-  etag: src.etag ? src.etag.trim().replace(/^W\//, "") : null,
+  etag: src.etag ? normalizeEtag(src.etag) : null,
   last_modified: src.lastModified || null,
 });
 
@@ -153,7 +153,9 @@ export async function extract({ src, index, filter, sink, jobs = 4, resume = fal
     await sink.end?.(false).catch(() => {});
     throw e;
   }
-  await sink.end?.(true).catch(() => {});
+  // Every file is checked and in place; a sink that couldn't tidy up (remove its journal) only
+  // leaves a note behind, so say so in the console instead of failing the job.
+  await sink.end?.(true).catch((e) => console.warn("LinkUnzip: finishing the output failed", e));
   return summary;
 }
 
@@ -185,22 +187,31 @@ async function run({ src, checked, sink, jobs, resume, journalOnly, password, si
   onProgress(stats.progress());
   let firstError = null;
 
-  // A verified file is handed over here; its close() runs while the next file streams in.
+  // A verified file is handed over here; its close() runs while the next file streams in. With
+  // MAX_CLOSING closes open, a worker waits in line and each close that ends lets one go on. (Not
+  // Promise.race over every open close: each race adds a handler to all of them, and when the
+  // closes slow down those pile up by the hundreds of MB.)
   const closing = new Set();
+  const waiting = [];
   const finish = async (out, file) => {
-    const p = out.close().then(
-      () => {
-        stats.filesDone += 1;
-        sink.finished?.(file);
-      },
-      (e) => {
-        if (!firstError) firstError = e;
-        inner.abort(e);
-      },
-    );
+    const p = out
+      .close()
+      .then(
+        () => {
+          stats.filesDone += 1;
+          sink.finished?.(file);
+        },
+        (e) => {
+          if (!firstError) firstError = e;
+          inner.abort(e);
+        },
+      )
+      .finally(() => {
+        closing.delete(p);
+        waiting.shift()?.();
+      });
     closing.add(p);
-    p.finally(() => closing.delete(p));
-    if (closing.size >= MAX_CLOSING) await Promise.race(closing);
+    if (closing.size >= MAX_CLOSING) await new Promise((go) => waiting.push(go));
   };
 
   const runSpan = async (span) => {
@@ -332,9 +343,7 @@ async function extractEntry(reader, file, sink, stats, tally, signal, finish, ca
   try {
     for await (const chunk of entryChunks(reader, entry, onData, carry.written, carry.dec)) {
       if (signal.aborted) throw signal.reason;
-      if (carry.written + chunk.length > entry.usize) {
-        throw failed(`the data expands beyond the ${entry.usize} bytes declared for this entry (zip bomb or corrupt archive)`);
-      }
+      checkGrowth(entry, carry.written + chunk.length);
       await out.write(chunk);
       carry.written += chunk.length;
       carry.crc = crc32(carry.crc, chunk);
@@ -345,12 +354,7 @@ async function extractEntry(reader, file, sink, stats, tally, signal, finish, ca
     // Padding after a complete deflate stream: fine when everything else checks out.
     if (!(e.junk && carry.written === entry.usize && (carry.crc === entry.crc || !checksCrc(entry)))) throw e;
   }
-  if (carry.written !== entry.usize) {
-    throw failed(`size mismatch: the entry says ${entry.usize} bytes, the data gave ${carry.written}`);
-  }
-  if (checksCrc(entry) && carry.crc !== entry.crc) {
-    throw failed(`CRC-32 mismatch (expected ${entry.crc.toString(16).padStart(8, "0")}, got ${carry.crc.toString(16).padStart(8, "0")}): the data is corrupt`);
-  }
+  checkEnd(entry, carry.written, carry.crc);
   // Checked: from here on the file only needs its name (close), which may finish later.
   carry.out = null;
   await finish(out, file);

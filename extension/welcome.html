@@ -1,90 +1,174 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-type="software">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n>Set up LinkUnzip</title>
+    <title data-i18n>Welcome to LinkUnzip</title>
+    <meta name="description" content="LinkUnzip is installed. Try it on a zip link, and choose site access and where extracted files go." />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="icons/icon32.png" />
     <script src="theme.js"></script>
+    <script src="welcome-enter.js"></script>
     <link rel="stylesheet" href="vendor/geist/geist.css" />
     <link rel="stylesheet" href="welcome.css" />
   </head>
   <body>
+    <a class="skip" href="#setup" data-i18n>Before you start</a>
+
+    <header class="top">
+      <div class="wrap">
+        <a class="brand" href="https://linkunzip.app/" target="_blank" rel="noopener" aria-label="LinkUnzip">
+          <img src="icons/icon128.png" alt="" width="34" height="34" />
+          <span class="word" aria-hidden="true"><b>LINK</b>UNZIP</span>
+        </a>
+      </div>
+    </header>
+
+    <aside class="pin" id="pin" role="note" hidden>
+      <button class="pin-x" id="pin-close" type="button" aria-label="Close" data-i18n-aria-label>
+        <svg viewBox="0 0 256 256" aria-hidden="true"><path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z" /></svg>
+      </button>
+      <p class="pin-title" data-i18n>Keep LinkUnzip one click away</p>
+      <p class="pin-text" data-i18n>Can't see the icon? Click the puzzle piece next to the address bar, then the pin next to LinkUnzip.</p>
+    </aside>
+
     <main>
-      <header>
-        <img src="icons/icon128.png" alt="" width="56" height="56" />
-        <div>
-          <h1>LinkUnzip</h1>
-          <p class="muted" data-i18n>Extract a ZIP straight from a link into a folder, without ever saving the ZIP.</p>
-        </div>
-      </header>
-      <ol class="steps">
-        <li class="step" data-state="done">
-          <span class="mark" aria-hidden="true"></span>
-          <div>
-            <h2 data-i18n>Add the extension</h2>
-            <p class="muted" data-i18n>Done. Everything runs here in the browser: there is nothing else to install.</p>
-          </div>
-        </li>
-        <li class="step" id="step-sites" data-state="next">
-          <span class="mark" aria-hidden="true"></span>
-          <div>
-            <h2 data-i18n>Let LinkUnzip read zip links</h2>
-            <p class="muted" data-i18n>
-              To read a zip's index and only the files you pick, LinkUnzip asks the zip's server for parts of the file.
-              Chrome needs your permission for that. LinkUnzip only connects to a site when you give it a link there,
-              and nothing goes anywhere else.
-            </p>
-            <div class="btn-row">
-              <button id="allow-all" class="btn primary" type="button" data-i18n>Allow on every site</button>
+      <section class="hero" aria-labelledby="hero-h">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <p class="ready" data-rise><span class="dot" aria-hidden="true"></span><span data-i18n>Installed. Nothing else to set up.</span></p>
+            <h1 id="hero-h"><span class="mask"><span class="line" data-i18n>Unzip straight from a link.</span></span></h1>
+            <p class="lede" data-rise data-i18n>Open any zip link, pick the files you want and only those are downloaded. The zip itself never touches your disk.</p>
+            <div class="cta" data-rise>
+              <button class="btn primary" id="go" type="button">
+                <span data-i18n>Go try it</span>
+                <svg class="arrow" viewBox="0 0 256 256" aria-hidden="true"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" /></svg>
+              </button>
             </div>
-            <p id="sites-status" class="status" role="status"></p>
-            <p class="muted small" data-i18n>Prefer to decide per site? Skip this: LinkUnzip asks the first time you use a link on a new site.</p>
-          </div>
-        </li>
-        <li class="step" id="step-folder" data-state="done">
-          <span class="mark" aria-hidden="true"></span>
-          <div>
-            <h2 data-i18n>Where extracted files go</h2>
-            <p class="muted" data-i18n>Into your Downloads folder, in a folder named after the zip. Nothing to set up.</p>
-            <p class="muted small" data-i18n>
-              Zips with thousands of files are much faster into a folder you choose: Chrome's downloads save about 6
-              files a second. Chrome doesn't let extensions pick Downloads, Desktop or Documents themselves, so make a
-              folder inside one of them (for example Downloads > LinkUnzip) and pick that.
-            </p>
-            <div class="btn-row">
-              <button id="folder" class="btn" type="button">Choose a folder instead...</button>
-              <button id="use-downloads" class="btn" type="button" data-i18n hidden>Use Downloads</button>
-            </div>
-            <p id="folder-status" class="status" role="status"></p>
-          </div>
-        </li>
-        <li class="step" id="step-try" data-state="todo">
-          <span class="mark" aria-hidden="true"></span>
-          <div>
-            <h2 data-i18n>Try it</h2>
-            <p class="muted" id="try-text">
+            <p class="note" id="try-text" data-rise>
               Right-click any link to a .zip file and choose Extract with LinkUnzip. Or click the LinkUnzip icon in the
               toolbar and paste a link.
             </p>
-            <p class="muted small" data-i18n>
-              Can't see the icon? Click the puzzle piece next to the address bar, then the pin next to LinkUnzip.
-            </p>
-            <details>
-              <summary data-i18n>Optional: the LinkUnzip helper for Windows</summary>
-              <p class="muted small">
-                <span id="helper-text">
-                  LinkUnzip doesn't need it. Once it is installed, Settings > Extract with the Windows helper lets it
-                  save straight into Downloads, which is faster for zips with thousands of files, and Open folder opens
-                  Explorer there. It also brings the linkunzip command line.
-                </span>
-                <a href="https://github.com/CincaAlex/LinkUnzip/releases/latest" target="_blank" rel="noopener" data-i18n>Get it on GitHub</a>
-              </p>
-            </details>
           </div>
-        </li>
-      </ol>
+          <div class="hero-shot" data-settle>
+            <img class="theme-light" src="welcome/popup-light.webp" width="480" height="720" alt="The LinkUnzip popup with one photo picked from an 18 GB zip" />
+            <img class="theme-dark" src="welcome/popup-dark.webp" width="480" height="720" alt="" />
+          </div>
+        </div>
+      </section>
+
+      <section class="setup" id="setup" aria-labelledby="setup-h" tabindex="-1">
+        <div class="wrap">
+          <h2 id="setup-h" data-i18n>Before you start</h2>
+          <p class="intro" data-i18n>LinkUnzip works without these. You can change them any time in Settings.</p>
+
+          <div class="rows">
+            <div class="row" id="row-sites">
+              <div class="row-text">
+                <h3 data-i18n>Site access</h3>
+                <p data-i18n>LinkUnzip asks the first time you use a link on a new site. Allow every site to skip that question. It still only connects to a site when you give it a link there.</p>
+                <p class="status" id="sites-status" role="status"></p>
+              </div>
+              <div class="row-act">
+                <button class="btn" id="allow-all" type="button" data-i18n>Allow on every site</button>
+              </div>
+            </div>
+
+            <div class="row" id="row-folder">
+              <div class="row-text">
+                <h3 data-i18n>Where extracted files go</h3>
+                <p data-i18n>For zips with thousands of files, a folder you choose is much faster. {browser} doesn't let extensions use Downloads, Desktop or Documents themselves, so pick a folder inside one of them.</p>
+                <p class="status" id="folder-status" role="status"></p>
+              </div>
+              <div class="row-act">
+                <button class="btn" id="folder" type="button">Choose a folder instead...</button>
+                <button class="btn quiet" id="use-downloads" type="button" data-i18n hidden>Use Downloads</button>
+              </div>
+            </div>
+
+            <div class="row">
+              <div class="row-text">
+                <h3 data-i18n>The Windows helper</h3>
+                <p id="helper-text">
+                  LinkUnzip doesn't need it. Once it is installed, Settings > Extract with the Windows helper lets it save
+                  straight into Downloads, which is faster for zips with thousands of files, and Open folder opens Explorer
+                  there. It also brings the linkunzip command line.
+                </p>
+              </div>
+              <div class="row-act">
+                <a class="btn" href="https://github.com/CincaAlex/LinkUnzip/releases/latest" target="_blank" rel="noopener" data-i18n>Get it on GitHub</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="ways" aria-labelledby="ways-h">
+        <div class="wrap">
+          <h2 id="ways-h" data-i18n>Three ways to use it</h2>
+          <p class="intro" data-i18n>Each one opens the same window: the files inside, what the download costs, and where they go.</p>
+
+          <div class="ways-grid">
+            <article class="way">
+              <h3 data-i18n>Right-click a zip link</h3>
+              <p id="way-menu">On any page, then choose Extract with LinkUnzip.</p>
+              <div class="stage" aria-hidden="true">
+                <span class="stage-link">dataset-v2.zip</span>
+                <div class="ctx">
+                  <div data-i18n>Open link in new tab</div>
+                  <div data-i18n>Save link as...</div>
+                  <div data-i18n>Copy link address</div>
+                  <hr />
+                  <div class="hit"><img src="icons/icon32.png" alt="" width="16" height="16" /><span data-i18n>Extract with LinkUnzip</span></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="way">
+              <h3 data-i18n>Paste a link</h3>
+              <p data-i18n>Click the LinkUnzip icon in the toolbar and paste any zip address.</p>
+              <div class="stage" aria-hidden="true">
+                <div class="mini">
+                  <div class="mini-bar"><img src="icons/logo-lines.png" alt="" height="18" /><span class="word"><b>LINK</b>UNZIP</span></div>
+                  <div class="mini-body">
+                    <div class="mini-field">https://example.com/files/build-2026.zip</div>
+                    <div class="mini-go" data-i18n>Open</div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="way">
+              <h3 data-i18n>Look before you extract</h3>
+              <p data-i18n>Click the eye next to a file to open it straight from the zip.</p>
+              <div class="stage">
+                <div class="mini">
+                  <div class="mini-bar">
+                    <img src="icons/logo-lines.png" alt="" height="18" />
+                    <span class="mini-name">000000000009.jpg<small>train2017.zip</small></span>
+                  </div>
+                  <div class="mini-photo">
+                    <img src="welcome/preview-photo.webp" width="648" height="322" alt="A photo opened straight from inside an 18 GB zip" />
+                  </div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
     </main>
+
+    <footer class="foot">
+      <div class="wrap">
+        <p data-i18n>No account. LinkUnzip only talks to the server the zip is on.</p>
+        <nav aria-label="LinkUnzip">
+          <a class="link" href="https://linkunzip.app/guide" target="_blank" rel="noopener" data-i18n>Guide</a>
+          <a class="link" href="https://linkunzip.app/privacy" target="_blank" rel="noopener" data-i18n>Privacy</a>
+          <a class="link" href="https://github.com/CincaAlex/LinkUnzip" target="_blank" rel="noopener">GitHub</a>
+        </nav>
+      </div>
+    </footer>
+
     <script type="module" src="welcome.js"></script>
   </body>
 </html>

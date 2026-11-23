@@ -365,18 +365,32 @@ async function main() {
       page.evaluate(async (where) => {
         const { loadSettings } = await import("./settings.js");
         await chrome.storage.local.set({ settings: { ...(await loadSettings()), saveTo: where } });
-        await chrome.runtime.sendMessage({ cmd: "baseFolderChanged" });
+        await chrome.runtime.sendMessage({ cmd: "folderChanged" });
       }, saveTo);
     await setSaveTo("folder");
 
     const send = (cmd, data = {}) => page.evaluate((m) => chrome.runtime.sendMessage(m), { cmd, ...data });
-    const job = (jid) => page.evaluate((j) => chrome.storage.session.get("jobs").then((s) => s.jobs?.[j]), jid);
+    // A read that doesn't answer in 20 s counts as "unknown" instead of waiting forever: under a
+    // zip with 70,000 files the extension's storage can stop answering, and the run hung for hours.
+    const job = (jid) =>
+      Promise.race([
+        page.evaluate((j) => chrome.storage.session.get("jobs").then((s) => s.jobs?.[j]), jid),
+        sleep(20000).then(() => ({ phase: "no answer from the extension in 20 s" })),
+      ]);
     async function until(jid, phases, ms = 120000) {
-      const end = Date.now() + ms;
+      const start = Date.now();
+      const end = start + ms;
+      let said = start;
       for (;;) {
         const j = await job(jid);
         if (j && phases.includes(j.phase)) return j;
         if (Date.now() > end) return j;
+        // A long wait says where the job is, so a run that stops shows where.
+        if (Date.now() - said > 30000) {
+          said = Date.now();
+          const p = j?.progress || {};
+          console.log(`      ... ${Math.round((said - start) / 1000)} s: ${j?.phase}, ${p.files_done ?? "?"} of ${p.total_files ?? "?"} files, ${p.active_count ?? "?"} active, ${p.retries ?? 0} retries`);
+        }
         await sleep(150);
       }
     }
@@ -432,7 +446,8 @@ async function main() {
       check(ready.output === `LinkUnzip > ${kind}`, `${kind}: goes into ${ready.output}`);
       const t0 = Date.now();
       await send("extract", { id: jid, target: ready.target, output: ready.output, connections: 4 });
-      const done = await until(jid, ["done", "error"], 600000);
+      // 70,000 files at about 115 a second into the browser's file system: 10 minutes and more.
+      const done = await until(jid, ["done", "error"], 900000);
       const ms = Date.now() - t0;
       check(done?.phase === "done", `${kind}: extracted in Chrome in ${ms} ms`, JSON.stringify(done?.error));
       if (done?.phase !== "done") continue;
@@ -612,7 +627,7 @@ async function main() {
 
     // "A folder I choose" without a folder (it was removed): jobs go to Downloads meanwhile.
     await page.evaluate(async () => (await import("./folder.js")).removeFolder("base"));
-    await send("baseFolderChanged");
+    await send("folderChanged");
     const { id: nj } = await send("inspect", { url: `${BASE}/streamed.zip` });
     const noFolder = await until(nj, ["ready", "error"]);
     check(noFolder?.output === "Downloads > streamed", `without a chosen folder a job goes to Downloads ("${noFolder?.output}")`);
@@ -621,7 +636,7 @@ async function main() {
       const { setFolder } = await import("./folder.js");
       await setFolder("base", await (await navigator.storage.getDirectory()).getDirectoryHandle("LinkUnzip", { create: true }));
     });
-    await send("baseFolderChanged");
+    await send("folderChanged");
 
     // Chrome stops the background worker when nothing happens for a while; the offscreen page
     // outlives it. Afterwards LinkUnzip must still work (idle), and a running job must carry on.
@@ -769,7 +784,8 @@ async function main() {
     await (await swNow.worker()).evaluate(() => chrome.offscreen.closeDocument().catch(() => {}));
     await sleep(500);
     await send("resume", { id: mmj });
-    const mr = await until(mmj, ["done", "error"], 300000);
+    // About 1,300 files through Chrome's downloads: 140 to 350 ms each, depending on the machine.
+    const mr = await until(mmj, ["done", "error"], 600000);
     check(mc?.phase === "cancelled" && doneBefore > 0 && mr?.phase === "done" && mr.result.skipped_existing >= doneBefore, `Downloads: stopped after ${doneBefore} files (worker stopped, engine page closed), Resume skipped ${mr?.result?.skipped_existing} and saved ${mr?.result?.files}`, JSON.stringify(mc?.error || mr?.error));
     const history2 = await downloadList();
     check(history2.held === 2 && history2.others === 0, `Downloads: the download list is still clean after all that (the 2 held files and ${history2.keepers} job entries for Open folder)`);

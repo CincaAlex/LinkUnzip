@@ -8,7 +8,7 @@
 // Node has fetch and DecompressionStream like the browser; only the folder is different (plain
 // files here, a folder handle in the extension).
 //
-// `--only=swap,ifrange,stream,password,inner,top` runs just those groups.
+// `--only=swap,ifrange,stream,password,inner,top,sample,selection` runs just those groups.
 
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -28,13 +28,15 @@ import { Filter } from "../extension/engine/plan.js";
 import { ByteReader, Source } from "../extension/engine/source.js";
 import { Tree } from "../extension/engine/tree.js";
 import { readIndex } from "../extension/engine/zip.js";
+import { decodeSelection, encodeSelection, looksTemporary, parseShareFragment, shareLink } from "../extension/selection.js";
 import { bytesOf, makeZip, sha256 as sha256Of } from "./test_zips.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.resolve(process.argv[2] || "test-data");
 const ONLY = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7).split(",").filter(Boolean);
 const wanted = (group) => !ONLY.length || ONLY.includes(group);
-const PORT = 8190;
+// ENGINE_TEST_PORT moves it off 8190 when a manual test server already runs there.
+const PORT = Number(process.env.ENGINE_TEST_PORT) || 8190;
 const BASE = `http://127.0.0.1:${PORT}`;
 let failures = 0;
 
@@ -1101,6 +1103,124 @@ async function verifyKind(kind, connections = 4) {
   return out;
 }
 
+/** Entries for a Tree without a zip: `count` files spread over folders, stored, unencrypted. */
+function syntheticEntries(count) {
+  const exts = ["jpg", "png", "txt", "csv", "JPG"];
+  const entries = [];
+  for (let i = 0; i < count; i++) {
+    const name = `set${i % 7}/part${i % 13}/file${String(i).padStart(6, "0")}.${exts[i % exts.length]}`;
+    entries.push({ name, usize: 100 + i, csize: 100 + i, method: 0, flags: 0, offset: i * 200 });
+  }
+  return entries;
+}
+
+/** "Pick N at random": the same seed picks the same files, filters apply, sizes stay fast. */
+function checkSample() {
+  const tree = new Tree(syntheticEntries(5000));
+  const a = tree.sample({ n: 25, seed: 12345 });
+  const b = new Tree(syntheticEntries(5000)).sample({ n: 25, seed: 12345 });
+  const c = tree.sample({ n: 25, seed: 54321 });
+  const keys = (r) => Object.keys(r.marks).join("|");
+  check(keys(a) === keys(b) && a.picked === 25 && a.matched === 5000 && a.marks[""] === false && a.seed === 12345, "sample: same zip and seed, same 25 files");
+  check(keys(a) !== keys(c), "sample: another seed, other files");
+  const picked = (r) => Object.keys(r.marks).filter((k) => k !== "");
+  check(picked(a).every((p) => tree.fileIndex.has(p)) && tree.measure(new Filter([], { marks: a.marks })).files === 25, "sample: the marks tick exactly the picked files");
+  const scoped = tree.sample({ scope: "set3/", n: 40, seed: 1 });
+  check(scoped.picked === 40 && picked(scoped).every((p) => p.startsWith("set3/")), `sample: scope set3/ (${scoped.matched} matches)`);
+  const byExt = tree.sample({ ext: "jpg", n: 30, seed: 2 });
+  check(byExt.matched === 2000 && picked(byExt).every((p) => /\.jpg$/i.test(p)), `sample: ext jpg, any case (${byExt.matched} matches)`);
+  const both = tree.sample({ scope: "set1/", query: "part2/", ext: ".png", n: 5, seed: 3 });
+  const bothWant = [...tree.fileIndex.keys()].filter((p) => p.startsWith("set1/") && p.includes("part2/") && p.endsWith(".png")).length;
+  check(both.matched === bothWant && picked(both).every((p) => p.startsWith("set1/") && p.includes("part2/") && p.endsWith(".png")), `sample: scope, search and ext together (${bothWant} matches)`);
+  const glob = tree.sample({ query: "*000??.txt", n: 1000, seed: 4 });
+  check(glob.picked === glob.matched && glob.matched > 0 && glob.matched < 1000, `sample: n larger than the ${glob.matched} matches picks them all`);
+  const none = tree.sample({ query: "nothing-like-this", n: 5, seed: 5 });
+  check(none.picked === 0 && keys(none) === "", "sample: no matches, nothing ticked");
+  const free = tree.sample({ n: 3 });
+  check(Number.isInteger(free.seed) && free.seed >= 0 && free.seed <= 0xffffffff && keys(tree.sample({ n: 3, seed: free.seed })) === keys(free), `sample: no seed given, one is picked and returned (${free.seed})`);
+  check(tree.sample({ n: 50_000, seed: 6 }).picked === 5000 && new Tree(syntheticEntries(20_000)).sample({ n: 50_000, seed: 6 }).picked === 10_000, "sample: at most 10,000 files");
+
+  const bigTree = new Tree(syntheticEntries(100_000));
+  const t0 = performance.now();
+  const r = bigTree.sample({ n: 10_000, seed: 7 });
+  const r2 = bigTree.sample({ ext: "csv", query: "part1", n: 500, seed: 8 });
+  const ms = performance.now() - t0;
+  check(r.picked === 10_000 && r2.picked === 500 && ms < 1000, `sample: 100,000 files, two samples in ${ms.toFixed(0)} ms`);
+}
+
+/** Share links and their selections: round trips, and everything a hostile link might try. */
+async function checkSelection() {
+  const rejects = async (what, fn) => {
+    try {
+      await fn();
+      check(false, `selection: refuses ${what}`);
+    } catch (e) {
+      check(e instanceof Error && e.constructor === Error, `selection: refuses ${what} (${e.message})`);
+    }
+  };
+  /** Pack any JSON the way encodeSelection does, to build hostile ones. */
+  const pack = async (text) => {
+    const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+    return Buffer.from(await new Response(stream).arrayBuffer()).toString("base64url");
+  };
+
+  const marks = { "": false, "photos/": true, "photos/raw/": false, "caf\u00e9/\u65e5\u672c.txt": true };
+  const enc = await encodeSelection({ marks });
+  check(/^[A-Za-z0-9_-]+$/.test(enc) && JSON.stringify((await decodeSelection(enc)).marks) === JSON.stringify(marks), `selection: marks round trip (${enc.length} chars)`);
+  const sample = { n: 100, seed: 4294967295, scope: "a/", query: "*.jpg", ext: "jpg" };
+  check(JSON.stringify((await decodeSelection(await encodeSelection({ sample }))).sample) === JSON.stringify(sample), "selection: sample round trip");
+  check((await encodeSelection(null)) === "" && (await decodeSelection("")) === null, "selection: everything is no text at all");
+  const many = {};
+  for (let i = 0; i < 1500; i++) many[`dataset/images/train/img_${String(i).padStart(6, "0")}.jpg`] = true;
+  const manyEnc = await encodeSelection({ marks: many });
+  check(Object.keys((await decodeSelection(manyEnc)).marks).length === 1500, `selection: 1,500 similar paths pack into ${manyEnc.length} chars`);
+
+  await rejects("text over 8,192 chars", () => decodeSelection("A".repeat(8193)));
+  await rejects("characters outside base64url", () => decodeSelection("abc+/="));
+  await rejects("bytes that aren't deflate", () => decodeSelection("AAAAAAAAAAAAAAAA"));
+  await rejects("a bad base64 length", () => decodeSelection("A"));
+  await rejects("bad JSON", async () => decodeSelection(await pack("{marks:")));
+  await rejects("JSON that isn't an object", async () => decodeSelection(await pack("[1,2]")));
+  await rejects("unknown keys", async () => decodeSelection(await pack('{"marks":{},"run":"x"}')));
+  await rejects("a mark that isn't a boolean", async () => decodeSelection(await pack('{"marks":{"a":1}}')));
+  await rejects("marks that aren't an object", async () => decodeSelection(await pack('{"marks":"a"}')));
+  await rejects("a key over 4,096 chars", async () => decodeSelection(await pack(JSON.stringify({ marks: { ["a".repeat(4097)]: true } }))));
+  const tooMany = {};
+  for (let i = 0; i < 20_001; i++) tooMany[i] = true;
+  await rejects("more than 20,000 marks (already too long as text)", async () => decodeSelection(await pack(JSON.stringify({ marks: tooMany }))));
+  await rejects("more than 256 KB unpacked", async () => decodeSelection(await pack(JSON.stringify({ marks: { a: true }, pad: " ".repeat(300_000) }))));
+  await rejects("a sample of 0 files", async () => decodeSelection(await pack('{"sample":{"n":0,"seed":1}}')));
+  await rejects("a sample over 10,000", async () => decodeSelection(await pack('{"sample":{"n":10001,"seed":1}}')));
+  await rejects("a seed out of range", async () => decodeSelection(await pack('{"sample":{"n":5,"seed":-1}}')));
+  await rejects("a sample scope without /", async () => decodeSelection(await pack('{"sample":{"n":5,"seed":1,"scope":"a"}}')));
+  await rejects("a sample with a text n", async () => decodeSelection(await pack('{"sample":{"n":"5","seed":1}}')));
+  await rejects("a selection too large to share", () => encodeSelection({ marks: Object.fromEntries(Array.from({ length: 20_000 }, () => [crypto.randomBytes(12).toString("hex"), true])) }));
+
+  const zip = "https://example.com/data/set 1.zip?x=1&y=2";
+  const link = shareLink({ url: zip, selection: enc, files: 12, bytes: 3456 });
+  const parsed = parseShareFragment(new URL(link).hash);
+  check(link.startsWith("https://linkunzip.app/open#v=1&u=") && parsed.url === zip && parsed.s === enc && parsed.n === 12 && parsed.b === 3456 && parsed.v === 1, "share link: round trip");
+  const all = parseShareFragment(new URL(shareLink({ url: zip })).hash);
+  check(!shareLink({ url: zip }).includes("&s=") && all.s === null && all.n === null, "share link: no s for everything");
+  const bad = (what, hash) => {
+    try {
+      parseShareFragment(hash);
+      check(false, `share link: refuses ${what}`);
+    } catch (e) {
+      check(e instanceof Error, `share link: refuses ${what} (${e.message})`);
+    }
+  };
+  bad("javascript:", `#v=1&u=${encodeURIComponent("javascript:alert(1)")}`);
+  bad("file:", `#v=1&u=${encodeURIComponent("file:///C:/Windows/win.ini")}`);
+  bad("data:", `#v=1&u=${encodeURIComponent("data:text/html,x")}`);
+  bad("no url", "#v=1");
+  bad("version 2", `#v=2&u=${encodeURIComponent(zip)}`);
+  bad("over 12,000 chars", `#v=1&u=${encodeURIComponent(zip)}&s=${"A".repeat(12_000)}`);
+  bad("a count that isn't a number", `#v=1&u=${encodeURIComponent(zip)}&n=12abc`);
+  bad("an s with other characters", `#v=1&u=${encodeURIComponent(zip)}&s=a%2Bb`);
+  check(looksTemporary("https://bucket.s3.amazonaws.com/a.zip?X-Amz-Signature=abc&X-Amz-Expires=600") && !looksTemporary("https://example.com/a.zip?v=2") && !looksTemporary("not a url"), "looksTemporary: signed links only");
+}
+
 /** Wait until the Range server answers (Python can take a few seconds to start on a CI runner). */
 async function waitForServer() {
   for (let i = 0; i < 150; i++) {
@@ -1126,6 +1246,8 @@ async function main() {
     if (wanted("password")) await checkPasswords();
     if (wanted("inner")) await checkInner();
     if (wanted("top")) await checkTopFolder();
+    if (wanted("sample")) checkSample();
+    if (wanted("selection")) await checkSelection();
     if (!wanted("rest")) return;
 
     // Ordinary archives: small (stored + deflate + unicode), streamed (data descriptors), many files.
@@ -1151,6 +1273,8 @@ async function main() {
             e.handle({ type: "measure", id: "b", select: { paths: ["stored/"], exclude: [] } });
             e.handle({ type: "list", id: "nope", dir: "" });
             e.handle({ type: "entry", id: "b", path: "stored/README_stored.txt" });
+            e.handle({ type: "sample", id: "b", n: 3, seed: 99 });
+            e.handle({ type: "sample", id: "b", scope: "no-such-folder/", n: 3 });
             setTimeout(resolve, 50);
           }
         },
@@ -1167,6 +1291,9 @@ async function main() {
     check(replies.some((m) => m.type === "error" && m.code === "unknown_job"), "list on an unknown id answers unknown_job");
     const entry = replies.find((m) => m.type === "entry");
     check(entry && entry.entry.regionEnd > entry.entry.offset && entry.source.size > 0, "entry: offset, region end and source for the viewer");
+    const sampled = replies.find((m) => m.type === "sampled");
+    check(sampled && sampled.id === "b" && sampled.picked === 3 && sampled.seed === 99 && Object.keys(sampled.marks).length === 4, `sample: answered sampled with 3 of ${sampled?.matched} files`);
+    check(replies.some((m) => m.type === "error" && m.code === "bad_request" && /no-such-folder/.test(m.message || m.detail || "")), "sample: a folder that isn't there answers bad_request");
 
     // The file list's questions, the index cache, Resume after the page closed, dropped connections.
     await checkTree("small");

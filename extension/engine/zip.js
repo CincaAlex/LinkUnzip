@@ -27,9 +27,11 @@ const FLAG_ENCRYPTED = 1 << 0;
 const FLAG_STRONG_ENCRYPTION = 1 << 6;
 const FLAG_UTF8 = 1 << 11;
 
-const view = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
+/** A little-endian reader over `b`'s own bytes. */
+export const view = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
 
-function u64(dv, o) {
+/** A 64-bit size or offset, refused when a JavaScript number can't hold it exactly. */
+export function u64(dv, o) {
   const v = dv.getBigUint64(o, true);
   if (v > BigInt(Number.MAX_SAFE_INTEGER)) throw failed("a size or offset in the zip is too large");
   return Number(v);

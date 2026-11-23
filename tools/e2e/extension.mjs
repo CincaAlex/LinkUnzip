@@ -165,8 +165,9 @@ function readyJob(report = {}) {
  * start; `replies` maps a command to its answer (default {ok: true}). In the page, window.__sent
  * holds every message sent and window.__emit(changes) plays a storage change.
  */
-async function openStubbedPopup(browser, { session, replies = {}, local = null, archive = null, scheme = null }, params = "") {
+async function openStubbedPopup(browser, { session, replies = {}, local = null, archive = null, scheme = null, ua = null }, params = "") {
   const page = await browser.newPage();
+  if (ua) await page.setUserAgent(ua);
   await page.setViewport({ width: 400, height: 700, deviceScaleFactor: 2 });
   if (scheme) await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
   await page.evaluateOnNewDocument((cfg) => {
@@ -237,10 +238,16 @@ async function openStubbedPopup(browser, { session, replies = {}, local = null, 
         sel?.marks ? nearest(sel.marks, path) : (!sel?.paths?.length || sel.paths.some(at(path))) && !(sel?.exclude || []).some(at(path));
       // Searches like the engine's: `*.jpg` is a pattern, anything else text in the path.
       const matcher = (query) => {
-        const q = query.toLowerCase();
-        if (!/[*?]/.test(q)) return (p) => p.toLowerCase().includes(q);
-        const re = new RegExp(`^${q.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`);
-        return (p) => re.test(p.toLowerCase());
+        let q = query.trim().toLowerCase();
+        const types = q.match(/^ext:(\S+)\s*/);
+        if (types) q = q.slice(types[0].length);
+        const exts = types ? types[1].split(",") : null;
+        const re = /[*?]/.test(q) ? new RegExp(`^${q.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`) : null;
+        return (p) => {
+          const lower = p.toLowerCase();
+          if (exts && !exts.includes(lower.slice(lower.lastIndexOf(".") + 1))) return false;
+          return re ? re.test(lower) : lower.includes(q);
+        };
       };
       return {
         list: ({ dir = "", offset = 0, limit = 500 }) => {
@@ -371,18 +378,16 @@ async function run() {
       await welcome.setViewport({ width: 900, height: 900 });
       await welcome.waitForFunction(() => document.getElementById("folder-status").textContent !== "", { timeout: 10000 }).catch(() => {});
       const steps = await welcome.evaluate(() => ({
-        ids: [...document.querySelectorAll("li.step")].map((s) => s.id),
-        sites: document.getElementById("step-sites").dataset.state,
+        go: Boolean(document.getElementById("go")),
+        sites: document.getElementById("row-sites").dataset.state || "ask",
         allow: !document.getElementById("allow-all").hidden,
         folder: document.getElementById("folder-status").textContent,
-        helper: Boolean(document.getElementById("step-helper")),
       }));
       // The real-run copy has every site allowed; the stubs-only run loads the extension as it ships.
-      const wantSites = STUBS_ONLY ? "next" : "done";
+      const wantSites = STUBS_ONLY ? "ask" : "done";
       check(
-        steps.ids.includes("step-sites") && steps.ids.includes("step-folder") && steps.ids.includes("step-try") && !steps.helper &&
-          steps.sites === wantSites && steps.allow === (wantSites === "next") && /Downloads/.test(steps.folder),
-        `the setup page: allow sites (${steps.sites}), where files go ("${steps.folder}"), try it; no helper step`,
+        steps.go && steps.sites === wantSites && steps.allow === (wantSites === "ask") && /Downloads/.test(steps.folder),
+        `the welcome page: Go try it, site access (${steps.sites}), where files go ("${steps.folder}")`,
       );
       await shot(welcome, "00-welcome");
       await welcome.close();
@@ -487,7 +492,7 @@ async function run() {
     await clickButton(popup, "Extract everything (one pass)");
     await popup.waitForSelector(".zero-line", { timeout: 180000 });
     const streamed = await text(popup, ".kv");
-    check(/1 pass/.test(streamed), `one pass finished (${streamed.replace(/\s+/g, " ").trim().slice(0, 60)}...)`);
+    check(/one pass/.test(streamed), `one pass finished (${streamed.replace(/\s+/g, " ").trim().slice(0, 60)}...)`);
     const v3 = verifyDownloads(path.join(downloads, "onepass"), "small");
     check(v3.ok, `the files read in one pass match the manifest (${v3.last})`);
     await shot(popup, "06b-one-pass-done");
@@ -523,7 +528,7 @@ async function run() {
 /** Click the button whose text is exactly `label`. */
 async function clickButton(page, label) {
   const handle = await page.evaluateHandle(
-    (l) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === l) || null,
+    (l) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === l && b.checkVisibility()) || null,
     label,
   );
   const el = handle.asElement();
@@ -574,7 +579,7 @@ async function stubbedViews(browser) {
     ["disk_full", /Not enough free space/, ["Extract here"], { failedWhile: "extract", error: { message: "needs 2.1 GB, 1.2 GB free on C:" } }],
     ["folder_not_writable", /Can.t write to this folder/, ["Extract here"], { failedWhile: "extract" }],
     ["unsupported_entries", /can.t read these files/, ["Download normally"]],
-    ["internal", /hit a bug/, ["Copy details", "Try again"]],
+    ["internal", /hit a bug/, ["Report it", "Try again"]],
     ["no_range", /only from the start/, ["Extract everything (one pass)", "Download normally"]],
     ["inner_compressed", /can only be read in one pass/, ["Extract everything (one pass)"]],
     ["password_needed", /password-protected/, ["Extract"], { failedWhile: "extract", lastExtract: { include: [] } }],
@@ -666,6 +671,7 @@ async function stubbedViews(browser) {
   await chooseFiles(browser, session);
   await noneInOnlyFolder(browser, session);
   await searchChips(browser, session);
+  await browserWording(browser, session);
 
   // Resume: a stopped job, and a failed extraction (instead of "Try again").
   const lastExtract = { output: "C:\\Users\\me\\Downloads\\LinkUnzip\\big", include: [], connections: 4, stream: false };
@@ -802,31 +808,46 @@ async function themeSwitch(browser, session) {
     before.attr === "system" && dark.attr === "dark" && dark.kept === "dark" && dark.saved === "dark" && dark.bg !== before.bg &&
       before.icon === "moon" && dark.icon === "sun" &&
       system.attr === "system" && system.kept === null && system.saved === "system" && system.bg === before.bg,
-    `the theme button switches to dark and remembers it; Match Windows goes back (${before.bg} -> ${dark.bg} -> ${system.bg})`,
+    `the theme button switches to dark and remembers it; Match system goes back (${before.bg} -> ${dark.bg} -> ${system.bg})`,
   );
 }
 
-const rowNames = (page) => page.$$eval(".fl-row .fl-name", (els) => els.map((e) => e.textContent));
+// The file list is a tree: a row's name, with "/" after a folder's, as the tests name them.
+const rowNames = (page) =>
+  page.$$eval(".fl-node", (els) =>
+    els.filter((e) => e.checkVisibility()).map((e) => e.querySelector(":scope > .fl-row .fl-name").textContent + (e.hasAttribute("aria-expanded") ? "/" : "")),
+  );
 const flText = (page, sel) => page.$eval(sel, (el) => el.textContent).catch(() => "");
 
-/** Tick or untick the file-list row named `name` (folders end in "/"). */
-const clickRow = (page, name) =>
-  page.evaluate((n) => {
-    const row = [...document.querySelectorAll(".fl-row")].find((r) => r.querySelector(".fl-name").textContent === n);
-    row.querySelector("input").click();
-  }, name);
+/** The visible tree row named `n` (folders end in "/"), as a page expression. */
+const ROW = (n) =>
+  `[...document.querySelectorAll(".fl-node")].find((e) => e.checkVisibility() && e.querySelector(":scope > .fl-row .fl-name").textContent + (e.hasAttribute("aria-expanded") ? "/" : "") === ${JSON.stringify(n)})`;
 
-const openFolderRow = (page, name) =>
-  page.evaluate((n) => [...document.querySelectorAll("button.fl-name.dir")].find((b) => b.textContent === n).click(), name);
+/** Tick or untick the file-list row named `name`. */
+const clickRow = (page, name) => page.evaluate(`${ROW(name)}.querySelector(":scope > .fl-row .fl-tick").click()`);
+
+/** Open a folder row in place, and wait for its rows. */
+async function openFolderRow(page, name) {
+  await page.evaluate(`${ROW(name)}.querySelector(":scope > .fl-row .fl-name").click()`);
+  await waitFor(page, `(() => { const r = ${ROW(name)}; return r?.getAttribute("aria-expanded") === "true" && r.querySelector(":scope > .fl-kids").childElementCount > 0; })()`);
+}
+const rowState = (page, name) => page.evaluate(`${ROW(name)}.getAttribute("aria-checked")`);
+const kidCount = (page, name) => page.evaluate(`${ROW(name)}.querySelectorAll(":scope > .fl-kids > .fl-node").length`);
 
 const waitFor = (page, fn, arg) =>
   page.waitForFunction(fn, { timeout: 8000 }, arg).catch((e) => {
     throw new Error(`${e.message} waiting for ${arg === undefined ? fn : JSON.stringify(arg)}`);
   });
 const waitTotals = (page, prefix) => waitFor(page, (p) => (document.querySelector(".fl-totals")?.textContent || "").startsWith(p), prefix);
-const waitCrumbs = (page, last) => waitFor(page, (l) => [...document.querySelectorAll(".fl-crumbs > *")].pop()?.textContent === l, last);
 
-/** Choose files: browse, tick, the selection the engine gets, keyboard, paging, search. */
+/** A command in the file list's More menu (Select all, Select none, Pattern...). */
+async function fromMore(page, label) {
+  await page.click(".fl-foot .menu-btn");
+  await page.waitForSelector(".menu:popover-open");
+  await clickButton(page, label);
+}
+
+/** Choose files: open folders in place, tick, the selection the engine gets, keyboard, paging, search. */
 async function chooseFiles(browser, session) {
   const sizes = ARCHIVE.map(([, a, b]) => (b === undefined ? a : a * b));
   const extracted = sizes.reduce((x, y) => x + y, 0);
@@ -848,66 +869,53 @@ async function chooseFiles(browser, session) {
   await clickRow(p, "docs/");
   await waitTotals(p, "5 files");
   await openFolderRow(p, "docs/");
-  await waitCrumbs(p, "docs");
   await clickRow(p, "readme.txt");
   await waitTotals(p, "6 files");
   check(true, `unticking folders and ticking one file inside one of them: ${await flText(p, ".fl-totals")}`);
 
-  // Keyboard: Space ticks, Enter opens a folder, Backspace goes up, arrows move.
-  await p.focus(".fl-row input");
+  // Keyboard: Space ticks, Enter opens a folder, Right goes in, Backspace goes up, Left closes, arrows move.
+  await p.evaluate(`${ROW("api/")}.focus()`);
   await p.keyboard.press("Space");
   await waitTotals(p, "8 files");
   await p.keyboard.press("Enter");
-  await waitCrumbs(p, "api");
-  const apiRows = await rowNames(p);
-  const apiTicked = await p.$$eval(".fl-row input", (cbs) => cbs.every((c) => c.checked));
+  await waitFor(p, `${ROW("index.html")} != null`);
+  const apiRows = await p.evaluate(`[...${ROW("api/")}.querySelectorAll(".fl-kids .fl-node")].map((e) => e.querySelector(".fl-name").textContent)`);
+  const apiTicked = await p.evaluate(`[...${ROW("api/")}.querySelectorAll(".fl-kids .fl-node")].every((e) => e.getAttribute("aria-checked") === "true")`);
+  await p.keyboard.press("ArrowRight");
+  const inside = await p.evaluate(() => document.activeElement.getAttribute("aria-label"));
   await p.keyboard.press("Backspace");
-  await waitCrumbs(p, "docs");
+  await p.keyboard.press("ArrowLeft");
   await p.keyboard.press("ArrowDown");
   const focused = await p.evaluate(() => document.activeElement.getAttribute("aria-label"));
   check(
-    apiRows.join(" ") === "index.html style.css" && apiTicked && /^guide\.pdf/.test(focused || ""),
-    `keyboard: Space ticks, Enter opens, Backspace goes up, arrows move (focus on "${focused}")`,
+    apiRows.join(" ") === "index.html style.css" && apiTicked && /^index\.html/.test(inside || "") && /^guide\.pdf/.test(focused || ""),
+    `keyboard: Space ticks, Enter opens, Right goes in, Backspace goes up, Left closes, arrows move (focus on "${focused}")`,
   );
 
-  // Back at the top, docs/ is partly ticked.
-  await p.evaluate(() => document.querySelector(".fl-crumbs button").click());
-  await waitCrumbs(p, "All files");
-  const docsMixed = await p.evaluate(
-    () => [...document.querySelectorAll(".fl-row")].find((r) => r.querySelector(".fl-name").textContent === "docs/").querySelector("input").indeterminate,
-  );
-  check(docsMixed, "a partly ticked folder shows a mixed checkbox");
+  // docs/ is partly ticked.
+  check((await rowState(p, "docs/")) === "mixed", "a partly ticked folder shows a mixed tick");
   await shot(p, "13-choose-files");
 
-  // A folder with 118,287 files: a page at a time, never more than 2,000 rows on the page.
+  // A folder with 118,287 files: a page at a time.
   const t0 = Date.now();
   await openFolderRow(p, "train/");
-  await waitCrumbs(p, "train");
-  const firstPage = await p.$$eval(".fl-row", (r) => r.length);
+  const firstPage = await kidCount(p, "train/");
   const openMs = Date.now() - t0;
   // One photo ticked inside the unticked folder stays ticked (the engine takes the ticks as they are).
   await clickRow(p, "img000000.jpg");
   await waitTotals(p, "9 files");
-  const stillTicked = await p.$eval(".fl-row input", (c) => c.checked);
+  const stillTicked = (await rowState(p, "img000000.jpg")) === "true";
   const hint = await p.$eval(".fl .notice", (n) => !n.hidden);
   for (let i = 0; i < 4; i++) {
-    const before = await flText(p, ".fl-count");
+    const before = await kidCount(p, "train/");
     await clickButton(p, "Show more");
-    await waitFor(p, (b) => document.querySelector(".fl-count").textContent !== b, before);
+    await waitFor(p, `${ROW("train/")}.querySelectorAll(":scope > .fl-kids > .fl-node").length > ${before}`);
   }
-  const windowRows = await p.$$eval(".fl-row", (r) => r.length);
-  const countText = await flText(p, ".fl-count");
+  const shown = await kidCount(p, "train/");
   await shot(p, "14-choose-big-folder");
-  // Again, now that the fake engine has its sorted listing: this is the popup's own time.
-  await p.evaluate(() => document.querySelector(".fl-crumbs button").click());
-  await waitCrumbs(p, "All files");
-  const t1 = Date.now();
-  await openFolderRow(p, "train/");
-  await waitCrumbs(p, "train");
-  const againMs = Date.now() - t1;
   check(
-    firstPage === 500 && windowRows === 2000 && /showing 501-2,500/.test(countText) && stillTicked && !hint && againMs < 1000,
-    `big folder: 500 rows (${openMs} ms first, ${againMs} ms again), ${windowRows} rows after 4× Show more (${countText}); a file ticked inside the unticked 118k folder stays ticked`,
+    firstPage === 500 && shown === 2500 && stillTicked && !hint,
+    `big folder: 500 rows (${openMs} ms), ${shown} after 4× Show more; a file ticked inside the unticked 118k folder stays ticked`,
   );
 
   // Search covers the whole zip.
@@ -928,27 +936,25 @@ async function chooseFiles(browser, session) {
     `Extract sends the ticks: ${sent}`,
   );
 
-  // Select none / all for the whole zip.
+  // Clearing the search brings the tree back as it was; Select none / all for the whole zip.
   await p.$eval("input[type=search]", (el) => {
     el.value = "";
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await waitCrumbs(p, "train");
-  await p.evaluate(() => document.querySelector(".fl-crumbs button").click());
-  await waitCrumbs(p, "All files");
-  await clickButton(p, "Select none");
+  await waitFor(p, `${ROW("img000000.jpg")} != null`);
+  await fromMore(p, "Select none");
   await waitTotals(p, "No files");
   const noneDisabled = await p.evaluate(() => document.getElementById("extract-btn").disabled);
-  await clickButton(p, "Select all");
+  await fromMore(p, "Select all");
   await waitTotals(p, "118,296 files");
   const allSummary = await flText(p, ".fl-sum");
-  check(noneDisabled && allSummary === "All files", `Select none disables Extract; Select all is back to "${allSummary}"`);
+  check(noneDisabled && allSummary === "All files", `the tree is back after the search; Select none disables Extract; Select all is back to "${allSummary}"`);
   await p.close();
 }
 
 /**
- * Select none inside the zip's only folder (COCO's train2017/): no files are left, so Extract is
- * greyed out, and a photo ticked next stays ticked.
+ * Select none with the zip's only folder open (COCO's train2017/): no files are left, so Extract
+ * is greyed out, and a photo ticked next stays ticked.
  */
 async function noneInOnlyFolder(browser, session) {
   const spec = [["train2017/", 6000, 160000]];
@@ -958,50 +964,76 @@ async function noneInOnlyFolder(browser, session) {
   lastPopup = p;
   await p.waitForSelector(".fl-row");
   await openFolderRow(p, "train2017/");
-  await waitCrumbs(p, "train2017");
-  await clickButton(p, "Select none");
+  await fromMore(p, "Select none");
   await waitTotals(p, "No files ticked.");
   const button = () => p.$eval("#extract-btn", (b) => ({ disabled: b.disabled, label: b.textContent }));
   const none = await button();
   const summary = await flText(p, ".fl-sum");
   check(
     summary === "No files" && none.disabled && !/0 files/.test(none.label),
-    `Select none inside the zip's only folder: "${summary}", Extract greyed out ("${none.label}")`,
+    `Select none with the zip's only folder open: "${summary}", Extract greyed out ("${none.label}")`,
   );
   await clickRow(p, "img000000.jpg");
   await waitTotals(p, "1 file,");
   const one = await button();
-  const kept = await p.$eval(".fl-row input", (c) => c.checked);
+  const kept = (await rowState(p, "img000000.jpg")) === "true";
   const hint = await p.$eval(".fl .notice", (n) => !n.hidden);
   check(kept && !hint && !one.disabled && /\(1 file,/.test(one.label), `then one photo ticked inside it stays ticked ("${one.label}")`);
   await p.close();
 }
 
-/** The type chips (*.jpg) search by pattern; Select all N then ticks every match, not just the page. */
+/** The type filter (All, Media, Docs) searches by type; Select all N then ticks every match, not just the page. */
 async function searchChips(browser, session) {
   const spec = [["photos/", 300, 1000], ["notes/a.txt", 10], ["notes/b.txt", 10], ["readme.md", 5]];
   const job = readyJob({ files: 303, dirs: 2, extracted: 300025, compressed: 270000, extensions: [{ ext: "jpg", files: 300 }, { ext: "txt", files: 2 }, { ext: "md", files: 1 }] });
   const p = await openStubbedPopup(browser, { session: session(job), archive: spec });
   lastPopup = p;
-  await p.waitForSelector(".fl-chips");
-  const chips = await p.$$eval(".chip-btn", (b) => b.map((x) => x.textContent));
-  await clickButton(p, "Select none");
+  await p.waitForSelector(".fl-kinds");
+  const kinds = await p.$$eval(".fl-kinds button", (b) => b.map((x) => x.textContent));
+  await fromMore(p, "Select none");
   await waitTotals(p, "No files");
-  await clickButton(p, "*.jpg");
+  await clickButton(p, "Media");
   await waitFor(p, () => /300 matches/.test(document.querySelector(".fl-count").textContent));
-  const pressed = await p.$eval('.chip-btn[data-q="*.jpg"]', (b) => b.getAttribute("aria-pressed"));
-  const searchText = await p.$eval("input[type=search]", (i) => i.value);
+  const pressed = await p.$eval('.fl-kinds [data-kind="media"]', (b) => b.getAttribute("aria-checked"));
   await clickButton(p, "Select all 300");
   await waitTotals(p, "300 files");
-  const ticked = await p.$$eval(".fl-row input", (cbs) => cbs.every((c) => c.checked));
+  const ticked = await p.$$eval(".fl-node", (rows) => rows.every((r) => r.getAttribute("aria-checked") === "true"));
   check(
-    chips.join(" ") === "*.jpg *.txt *.md" && pressed === "true" && searchText === "*.jpg" && ticked,
-    `type chips (${chips.join(" ")}): *.jpg finds 300, Select all 300 ticks every one of them (not only the 200 on the page)`,
+    kinds.join(" ") === "All Media Docs" && pressed === "true" && ticked,
+    `type filter (${kinds.join(" ")}): Media finds 300, Select all 300 ticks every one of them (not only the 200 on the page)`,
   );
-  await clickButton(p, "*.jpg"); // the same chip again clears the search
-  await waitCrumbs(p, "All files");
-  check((await p.$eval("input[type=search]", (i) => i.value)) === "", "the same chip again clears the search");
+  await clickButton(p, "Docs");
+  await waitFor(p, () => /3 matches/.test(document.querySelector(".fl-count").textContent));
+  await clickButton(p, "All");
+  await waitFor(p, () => document.querySelector(".fl-nav").hidden);
+  check((await rowNames(p)).join(" ") === "notes/ photos/ readme.md", "Docs finds the 3 documents; All brings the tree back");
   await p.close();
+}
+
+/** Texts name the browser they run in: Chrome, or Edge with its own settings page and wording. */
+async function browserWording(browser, session) {
+  const EDGE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
+  const seen = {};
+  for (const [name, ua] of [["chrome", null], ["edge", EDGE_UA]]) {
+    const p = await openStubbedPopup(browser, { session: session(failedJob("ask_where")), ua });
+    lastPopup = p;
+    await p.waitForSelector(".hero h1");
+    await p.evaluate(() => (chrome.tabs.create = async (o) => (window.__opened = o.url)));
+    const labels = await buttonLabels(p);
+    const settings = labels.find((l) => /download settings/.test(l));
+    if (settings) await clickButton(p, settings);
+    seen[name] = { h1: await text(p, ".hero h1"), body: await p.evaluate(() => document.body.innerText), settings, opened: await p.evaluate(() => window.__opened) };
+    await p.close();
+  }
+  const { chrome: c, edge: e } = seen;
+  check(
+    /^Chrome asks/.test(c.h1) && /"Ask where to save each file before downloading" in Chrome's/.test(c.body) && c.opened === "chrome://settings/downloads",
+    `in Chrome: "${c.h1}", the setting by its Chrome name, ${c.opened}`,
+  );
+  check(
+    /^Edge asks/.test(e.h1) && /In Edge's download settings/.test(e.body) && !/Chrome/.test(e.body) && e.settings === "Open Edge's download settings" && e.opened === "edge://settings/downloads",
+    `in Edge: "${e.h1}", "${e.settings}" opens ${e.opened}, and the card never says Chrome`,
+  );
 }
 
 /**

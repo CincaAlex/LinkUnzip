@@ -8,6 +8,8 @@
 // tools/i18n_check.mjs checks that every sentence the code uses is in every language, with the
 // same {placeholders}.
 
+import { isEdge } from "./config.js";
+
 export const LANGUAGES = {
   en: "English",
   de: "Deutsch",
@@ -61,7 +63,14 @@ export const currentLanguage = () => lang;
 /** The current language as a BCP 47 tag for Intl: "en", "pt-BR". */
 export const locale = () => lang.replace("_", "-");
 
-const fill = (text, vars) => text.replace(/\{(\w+)\}/g, (all, name) => (name in vars ? String(vars[name]) : all));
+// Every sentence may name the browser it runs in: {browser} is "Edge" in Microsoft Edge (its user
+// agent says "Edg/"), else "Chrome" (Chrome, and the browsers built on it, which call themselves so).
+const BROWSER = { browser: isEdge() ? "Edge" : "Chrome" };
+
+const fill = (text, vars) => {
+  const all = { ...BROWSER, ...vars };
+  return text.replace(/\{(\w+)\}/g, (whole, name) => (name in all ? String(all[name]) : whole));
+};
 
 /** `text` in the current language, with {placeholders} filled in from `vars`. */
 export function t(text, vars = {}) {

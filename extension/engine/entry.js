@@ -12,6 +12,25 @@ const CHUNK = 1 << 20;
 
 const NOT_LOCAL = "expected a local file header (PK\\x03\\x04) but found something else: wrong offset or corrupt archive";
 
+/** While an entry's data comes in: more than its index says is a zip bomb or a corrupt archive. */
+export function checkGrowth(entry, size) {
+  if (size > entry.usize) throw failed(`the data expands beyond the ${entry.usize} bytes declared for this entry (zip bomb or corrupt archive)`);
+}
+
+const hex = (n) => n.toString(16).padStart(8, "0");
+
+/**
+ * After an entry's data: its size and CRC-32 must be the ones its index gives. `crcWanted` is
+ * the CRC-32 from a data descriptor when there is one; `checkSize` is false where the index has
+ * no size to hold the data to (one pass, descriptor entries).
+ */
+export function checkEnd(entry, size, crc, { crcWanted = entry.crc, checkSize = true } = {}) {
+  if (checkSize && size !== entry.usize) throw failed(`size mismatch: the entry says ${entry.usize} bytes, the data gave ${size}`);
+  if (checksCrc({ ...entry, crc: crcWanted }) && crc !== crcWanted) {
+    throw failed(`CRC-32 mismatch (expected ${hex(crcWanted)}, got ${hex(crc)}): the data is corrupt`);
+  }
+}
+
 /** Skip to the entry's local header and past it; the local name and extra lengths decide. */
 export async function seekToData(reader, entry) {
   await reader.skipTo(entry.offset);
@@ -58,14 +77,13 @@ export function entryBody(src, entry, regionEnd, password, { skip = 0, limit = I
         for (;;) {
           const r = await gen.next();
           if (r.done) {
-            if (size !== entry.usize || (checksCrc(entry) && crc !== entry.crc)) {
-              return controller.error(failed(`${entry.name}: the data failed its size or CRC-32 check (corrupt archive)`));
-            }
+            checkEnd(entry, size, crc);
             return controller.close();
           }
           crc = crc32(crc, r.value);
           const at = size;
           size += r.value.length;
+          checkGrowth(entry, size);
           if (size <= skip) continue;
           let part = at < skip ? r.value.subarray(skip - at) : r.value;
           if (sent + part.length >= limit) {

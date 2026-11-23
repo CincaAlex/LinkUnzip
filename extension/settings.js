@@ -2,7 +2,6 @@
 // saved by an older version up to date.
 
 export const DEFAULT_SETTINGS = {
-  baseFolder: "", // unused since 1.1.0: the folder is a saved folder handle (folder.js)
   saveTo: "downloads", // "downloads": Chrome's downloads; "folder": the folder chosen in Settings
   connections: 4,
   loginWhenNeeded: true, // offer "Use my login on <host>" when a download needs the user's login
@@ -11,6 +10,8 @@ export const DEFAULT_SETTINGS = {
   useHelper: false, // extract with the Windows helper, when it is installed and can do the job
   language: "auto", // "auto" follows the browser; or a code from i18n.js LANGUAGES
   theme: "system", // "system" follows Windows; "light" or "dark" is the user's choice
+  rememberRecent: true, // the popup lists the zips opened lately (recent.js), on this PC only
+  imageGrid: false, // a Grid button for folders with images: thumbnails cost downloads, so it is opt-in
 };
 
 // theme.js reads this before the page paints: chrome.storage cannot be read that early.
@@ -45,6 +46,8 @@ export function migrate(saved = {}) {
     if (!("loginWhenNeeded" in s)) s.loginWhenNeeded = s.useLogin !== false;
     delete s.useLogin;
   }
+  // Before 1.1.0 the folder was a path; since then it is a saved folder handle (folder.js).
+  delete s.baseFolder;
   return { ...DEFAULT_SETTINGS, ...s };
 }
 

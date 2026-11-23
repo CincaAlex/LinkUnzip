@@ -14,18 +14,17 @@
 import { Inflate } from "../vendor/pako-inflate.js";
 import { crc32 } from "./crc32.js";
 import { checksCrc, parseAesExtra, realMethod } from "./crypto.js";
-import { decryptorFor, entryChunks } from "./entry.js";
+import { checkEnd, checkGrowth, decryptorFor, entryChunks } from "./entry.js";
 import { Coded, coded, failed, isTransient, transient } from "./errors.js";
 import { sameFolder, sanitizeEntryName, topOf, withoutTop } from "./plan.js";
-import { RETRY, delayAfter, openWhole, sleep } from "./source.js";
-import { LOCAL_SIG, METHOD_DEFLATE, METHOD_STORED, decodeName, isDir, isEncrypted, looksLikeHtml, parseCentralDirectory, unsupportedReason } from "./zip.js";
+import { ByteReader, RETRY, delayAfter, openWhole, sleep } from "./source.js";
+import { LOCAL_SIG, METHOD_DEFLATE, METHOD_STORED, decodeName, isDir, isEncrypted, looksLikeHtml, parseCentralDirectory, u64, unsupportedReason, view } from "./zip.js";
 
 const CENTRAL_SIG = 0x02014b50;
 const EOCD_SIG = 0x06054b50;
 const ZIP64_EOCD_SIG = 0x06064b50;
 const DESCRIPTOR_SIG = 0x08074b50;
 const FLAG_DESCRIPTOR = 1 << 3;
-const CHUNK = 1 << 20;
 /** A stored entry of unknown length is searched for its data descriptor this much at a time. */
 const SCAN = 64 * 1024;
 /** Input handed to the inflater at a time (what it doesn't use stays for the next entry). */
@@ -37,27 +36,18 @@ const RATIO_FROM = 1 << 30;
 /** A central directory bigger than this isn't compared at the end. */
 const MAX_LISTING = 64 << 20;
 
-const view = (b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
 const u32 = (b, o) => view(b).getUint32(o, true);
 
-function u64(dv, o) {
-  const v = dv.getBigUint64(o, true);
-  if (v > BigInt(Number.MAX_SAFE_INTEGER)) throw failed("a size in the zip is too large");
-  return Number(v);
-}
-
 /**
- * The response body with look-ahead: `peek` without consuming, `next` / `readExact` / `skip` /
- * `consume` to move on. Same `next` and `readExact` as ByteReader, so entryChunks reads from it.
+ * The response body with look-ahead: ByteReader (so entryChunks reads from it) plus `peek`
+ * without consuming and `consume` to move on. The end of the body is noticed, not an error,
+ * until something asks for bytes past it.
  */
-class Input {
+class Input extends ByteReader {
   constructor(body, onBytes) {
-    this.reader = body.getReader();
+    super(body, 0, onBytes);
     this.buf = new Uint8Array(0);
-    this.off = 0;
-    this.pos = 0;
     this.eof = false;
-    this.onBytes = onBytes;
   }
 
   get available() {
@@ -76,7 +66,7 @@ class Input {
       this.eof = true;
       return;
     }
-    this.onBytes(r.value.length);
+    this.count(r.value.length);
     const rest = this.buf.subarray(this.off);
     if (!rest.length) this.buf = r.value;
     else {
@@ -109,25 +99,6 @@ class Input {
     const out = this.buf.subarray(this.off, this.off + n);
     this.consume(n);
     return out;
-  }
-
-  async readExact(n) {
-    const out = new Uint8Array(n);
-    let got = 0;
-    while (got < n) {
-      const part = await this.next(n - got);
-      out.set(part, got);
-      got += part.length;
-    }
-    return out;
-  }
-
-  async skip(n) {
-    while (n > 0) n -= (await this.next(Math.min(n, CHUNK))).length;
-  }
-
-  cancel() {
-    this.reader.cancel().catch(() => {});
   }
 }
 
@@ -253,9 +224,7 @@ async function readData(input, h, write, { password, signal }) {
     let consumed = 0;
     try {
       for await (const chunk of entryChunks(input, entry, (n) => (consumed += n), 0, dec)) {
-        if (written + chunk.length > entry.usize && !h.descriptor) {
-          throw failed(`the data expands beyond the ${entry.usize} bytes declared for this entry (zip bomb or corrupt archive)`);
-        }
+        if (!h.descriptor) checkGrowth(entry, written + chunk.length);
         await take(chunk);
       }
     } catch (e) {
@@ -275,12 +244,7 @@ async function readData(input, h, write, { password, signal }) {
   } else {
     expected = await scanStored(input, h, take);
   }
-  if (!h.descriptor && written !== entry.usize) {
-    throw failed(`size mismatch: the entry says ${entry.usize} bytes, the data gave ${written}`);
-  }
-  if (checksCrc({ ...entry, crc: expected }) && crc !== expected) {
-    throw failed(`CRC-32 mismatch (expected ${expected.toString(16).padStart(8, "0")}, got ${crc.toString(16).padStart(8, "0")}): the data is corrupt`);
-  }
+  checkEnd(entry, written, crc, { crcWanted: expected, checkSize: !h.descriptor });
   return { written, crc: expected };
 }
 

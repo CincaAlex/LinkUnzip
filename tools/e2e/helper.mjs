@@ -278,9 +278,12 @@ async function main() {
     const shown = await text(popup, ".folder-name");
     check(shown === want && (await note(popup)) === "Extracted by the Windows helper.", `on: the popup says the helper extracts it, into ${shown}`, `${shown} / ${await note(popup)}`);
     // Untick helper-top/skip/ in the file list.
-    await popup.evaluate(() => [...document.querySelectorAll("button.fl-name.dir")].find((x) => x.textContent === "helper-top/").click());
-    await popup.waitForFunction(() => [...document.querySelectorAll(".fl-row .fl-name")].some((e) => e.textContent === "skip/"), { timeout: 10000 });
-    await popup.evaluate(() => [...document.querySelectorAll(".fl-row")].find((r) => r.querySelector(".fl-name").textContent === "skip/").querySelector("input").click());
+    // The file list is a tree: open helper-top in place, then untick skip inside it. (Page
+    // expressions as strings: the extension's pages do not allow eval.)
+    const folderRow = (name) => `[...document.querySelectorAll(".fl-node[aria-expanded]")].find((e) => e.querySelector(":scope > .fl-row .fl-name").textContent === ${JSON.stringify(name)})`;
+    await popup.evaluate(`${folderRow("helper-top")}.querySelector(".fl-name").click()`);
+    await popup.waitForFunction(`Boolean(${folderRow("skip")})`, { timeout: 10000 });
+    await popup.evaluate(`${folderRow("skip")}.querySelector(".fl-tick").click()`);
     await sleep(500);
     await popup.click("#extract-btn");
     let job = null;

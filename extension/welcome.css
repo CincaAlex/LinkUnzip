@@ -1,5 +1,8 @@
-/* The setup page: same neutral greys as popup.css and the same theme choice
-   (theme.js sets data-theme before the first paint; none = follow Windows). Text at least 4.5:1. */
+/* The welcome page: same neutral greys as popup.css and the same theme choice
+   (theme.js sets data-theme before the first paint; none = follow Windows). Text at least 4.5:1.
+   A dark bar on top like the popup's header, the popup itself beside what LinkUnzip does, then the
+   settings and the three ways in. Motion: the hero rises in once; buttons and links answer the
+   pointer; nothing moves on scroll. */
 
 :root {
   color-scheme: light;
@@ -8,39 +11,28 @@
   --surface-2: #f0f0f2;
   --border: #e4e4e7;
   --border-strong: #d4d4d8;
+  --control-line: #84848c;
   --text: #111113;
   --muted: #5c5c63;
-  --muted-on-2: #5c5c63;
-  --accent: #111113;
-  --accent-strong: #3f3f46;
-  --accent-ink: #ffffff;
   --accent-soft: rgba(17, 17, 19, 0.05);
-  --accent-line: rgba(17, 17, 19, 0.3);
   --action: #111113;
   --action-ink: #f4f4f5;
   --action-hover: #2a2a2e;
   --hover: rgba(17, 17, 19, 0.04);
   --focus: rgba(17, 17, 19, 0.6);
-  --track: #e4e4e7;
-  --zip: #b4b4bb;
-  --head-end: #0b0b0c;
-  --head-line: #0b0b0c;
+  --head: #0b0b0c;
   --head-text: #ededef;
   --head-muted: #8e8e96;
-  --foot-bg: #f4f4f5;
   --ok: #1d7a3d;
-  --ok-soft: rgba(29, 122, 61, 0.07);
-  --warn: #8f5400;
-  --warn-line: rgba(143, 84, 0, 0.35);
-  --warn-soft: rgba(143, 84, 0, 0.06);
   --err: #b42b3a;
-  --err-line: rgba(180, 43, 58, 0.35);
-  --err-soft: rgba(180, 43, 58, 0.06);
   --edge: none;
-  --watermark-filter: invert(1);
+  --shot: 0 1px 2px rgba(17, 17, 19, 0.06), 0 28px 56px -24px rgba(17, 17, 19, 0.3);
+  --lift: 0 12px 28px -14px rgba(17, 17, 19, 0.28);
   --sans: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --display: "Geist", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Dark: when Windows is dark and the user has not picked Light, or when the user picked Dark.
@@ -53,36 +45,20 @@
     --surface-2: #1f1f22;
     --border: #232326;
     --border-strong: #323237;
+    --control-line: #707078;
     --text: #ededef;
     --muted: #8e8e96;
-    --muted-on-2: #c4c4ca;
-    --accent: #e4e4e7;
-    --accent-strong: #c4c4ca;
-    --accent-ink: #0f0f11;
     --accent-soft: rgba(237, 237, 239, 0.06);
-    --accent-line: rgba(237, 237, 239, 0.28);
     --action: #e4e4e7;
     --action-ink: #0f0f11;
     --action-hover: #f4f4f5;
     --hover: rgba(255, 255, 255, 0.04);
     --focus: rgba(237, 237, 239, 0.6);
-    --track: #232326;
-    --zip: #45454b;
-    --head-end: #0b0b0c;
-    --head-line: #1c1c1f;
-    --head-text: #ededef;
-    --head-muted: #8e8e96;
-    --foot-bg: #0b0b0c;
     --ok: #7fcf9f;
-    --ok-soft: rgba(127, 207, 159, 0.08);
-    --warn: #e8b478;
-    --warn-line: rgba(232, 180, 120, 0.35);
-    --warn-soft: rgba(232, 180, 120, 0.07);
     --err: #f08a8a;
-    --err-line: rgba(240, 138, 138, 0.35);
-    --err-soft: rgba(240, 138, 138, 0.08);
     --edge: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-    --watermark-filter: none;
+    --shot: 0 0 0 1px #232326, 0 28px 56px -24px rgba(0, 0, 0, 0.75);
+    --lift: 0 12px 28px -14px rgba(0, 0, 0, 0.6);
   }
 }
 :root[data-theme="dark"] {
@@ -92,36 +68,39 @@
   --surface-2: #1f1f22;
   --border: #232326;
   --border-strong: #323237;
+  --control-line: #707078;
   --text: #ededef;
   --muted: #8e8e96;
-  --muted-on-2: #c4c4ca;
-  --accent: #e4e4e7;
-  --accent-strong: #c4c4ca;
-  --accent-ink: #0f0f11;
   --accent-soft: rgba(237, 237, 239, 0.06);
-  --accent-line: rgba(237, 237, 239, 0.28);
   --action: #e4e4e7;
   --action-ink: #0f0f11;
   --action-hover: #f4f4f5;
   --hover: rgba(255, 255, 255, 0.04);
   --focus: rgba(237, 237, 239, 0.6);
-  --track: #232326;
-  --zip: #45454b;
-  --head-end: #0b0b0c;
-  --head-line: #1c1c1f;
-  --head-text: #ededef;
-  --head-muted: #8e8e96;
-  --foot-bg: #0b0b0c;
   --ok: #7fcf9f;
-  --ok-soft: rgba(127, 207, 159, 0.08);
-  --warn: #e8b478;
-  --warn-line: rgba(232, 180, 120, 0.35);
-  --warn-soft: rgba(232, 180, 120, 0.07);
   --err: #f08a8a;
-  --err-line: rgba(240, 138, 138, 0.35);
-  --err-soft: rgba(240, 138, 138, 0.08);
   --edge: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-  --watermark-filter: none;
+  --shot: 0 0 0 1px #232326, 0 28px 56px -24px rgba(0, 0, 0, 0.75);
+  --lift: 0 12px 28px -14px rgba(0, 0, 0, 0.6);
+}
+
+/* The screenshots in the theme the page is in. */
+.theme-dark {
+  display: none;
+}
+:root[data-theme="dark"] .theme-light {
+  display: none;
+}
+:root[data-theme="dark"] .theme-dark {
+  display: block;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-light {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .theme-dark {
+    display: block;
+  }
 }
 
 * {
@@ -137,221 +116,615 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
+}
+
+body {
   font: 15px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
 
-main {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 48px 16px 64px;
+img,
+svg {
+  display: block;
 }
 
-header {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  margin-bottom: 32px;
-}
-
-header img {
-  border-radius: 13px;
-  flex: none;
-}
-
-h1 {
-  margin: 0;
-  font: 600 28px/1.2 var(--display);
-  letter-spacing: -0.02em;
-}
-
-h2 {
-  margin: 0 0 4px;
-  font: 600 17px/1.3 var(--display);
-  letter-spacing: -0.01em;
-}
-
+h1,
+h2,
+h3,
 p {
-  margin: 0 0 10px;
-}
-
-.muted {
-  color: var(--muted);
-}
-
-.small {
-  font-size: 13px;
-}
-
-b {
-  color: var(--text);
-  font-weight: 600;
-}
-
-a {
-  color: var(--accent);
-  text-underline-offset: 3px;
-}
-
-.steps {
-  list-style: none;
   margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 12px;
 }
 
-.step {
-  display: grid;
-  grid-template-columns: 28px 1fr;
-  gap: 14px;
-  padding: 18px 20px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--edge);
+.wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 32px;
 }
 
-/* A step that is not reached yet: dimmed, but its text stays readable. */
-.step[data-state="todo"] h2 {
-  color: var(--muted);
-}
-.step[data-state="todo"] .mark {
-  opacity: 0.6;
-}
-
-.step[data-state="next"] {
-  border-color: var(--accent-line);
-  box-shadow: var(--edge), 0 0 0 3px var(--accent-soft);
-}
-
-.mark {
-  width: 26px;
-  height: 26px;
-  margin-top: 1px;
-  border-radius: 50%;
-  border: 2px solid var(--border-strong);
-  display: grid;
-  place-items: center;
-  font: 700 14px/1 var(--sans);
-}
-
-.step[data-state="done"] .mark {
-  background: var(--action);
-  border-color: var(--action);
-  color: var(--action-ink);
-}
-.step[data-state="done"] .mark::before {
-  content: "✓";
-}
-
-.step[data-state="next"] .mark {
-  border-color: var(--accent-strong);
-}
-
-.step[data-state="checking"] .mark {
-  border-color: var(--border);
-  border-top-color: var(--accent-strong);
-  animation: spin 0.9s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .step[data-state="checking"] .mark {
-    animation: none;
-  }
-}
-
-.status {
-  font-weight: 600;
-}
-
-.detail {
-  font: 12px/1.4 var(--mono);
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-.step[data-state="done"] .status {
-  color: var(--ok);
-}
-.step[data-state="next"] .status {
-  color: var(--warn);
-}
-
-.btn-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 14px 0 12px;
-}
-
-.btn {
-  display: inline-block;
-  padding: 9px 16px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  box-shadow: var(--edge);
-  color: var(--text);
-  text-decoration: none;
-  font-weight: 500;
-  transition: background-color 0.12s, border-color 0.12s;
-}
-.btn:hover {
-  border-color: var(--border-strong);
-}
-
-button.btn {
-  font: inherit;
-  font-weight: 500;
-  cursor: pointer;
-}
-button.btn:disabled {
-  cursor: progress;
-  opacity: 0.75;
-}
-
-.btn.primary {
-  background: var(--action);
-  border-color: var(--action);
-  color: var(--action-ink);
-}
-.btn.primary:hover {
-  background: var(--action-hover);
-  border-color: var(--action-hover);
-}
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-
-.btn.disabled {
-  color: var(--muted);
-  cursor: default;
+.skip {
+  position: absolute;
+  left: 16px;
+  top: -60px;
+  z-index: 10;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--action);
+  color: var(--action-ink);
+  text-decoration: none;
+  font-weight: 500;
+}
+.skip:focus {
+  top: 12px;
 }
 
-details {
-  margin-top: 6px;
+/* Top bar: dark in both themes, like the popup header. */
+.top {
+  background: var(--head);
+  color: var(--head-text);
+}
+.top .wrap {
+  display: flex;
+  align-items: center;
+  height: 64px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 8px;
+}
+.brand img {
+  border-radius: 8px;
+}
+.word {
+  font: 300 19px/1 var(--display);
+  letter-spacing: 0.06em;
+}
+.word b {
+  font-weight: 700;
+}
+
+/* Pin note under the toolbar's puzzle piece, shown only while LinkUnzip isn't pinned. */
+.pin {
+  position: fixed;
+  top: 10px;
+  right: 18px;
+  z-index: 5;
+  width: 300px;
+  padding: 14px 40px 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 18px 40px -14px rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pin::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  right: 40px;
+  width: 12px;
+  height: 12px;
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  border-top: 1px solid var(--border-strong);
+  transform: rotate(45deg);
+}
+.pin-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.pin-text {
   color: var(--muted);
+}
+.pin-x {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 150ms var(--ease), color 150ms var(--ease);
+}
+.pin-x svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+.pin-x:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* Hero */
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 56px;
+  align-items: center;
+  padding-top: 40px;
+  padding-bottom: 44px;
+}
+.ready {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ok);
+}
+.ready .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+h1 {
+  font: 700 clamp(38px, 5vw, 56px) / 1.04 var(--display);
+  letter-spacing: -0.03em;
+  margin-bottom: 20px;
+  text-wrap: balance;
+}
+h1 .mask {
+  display: block;
+  overflow: hidden;
+  padding-bottom: 0.08em;
+  margin-bottom: -0.08em;
+}
+h1 .line {
+  display: block;
+}
+.lede {
+  max-width: 30em;
+  margin-bottom: 28px;
+  font-size: 18px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+.cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.note {
+  max-width: 34em;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.hero-shot {
+  justify-self: center;
+  width: min(100%, 340px);
+}
+.hero-shot img {
+  width: 100%;
+  height: auto;
+  border-radius: 14px;
+  box-shadow: var(--shot);
+}
+
+/* Buttons: one pair, a filled one and an outline one. Hover steps 1px up, press sinks 1px. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--edge);
+  color: var(--text);
+  font: 500 15px/1.2 var(--sans);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    transform 120ms var(--ease),
+    background-color 120ms var(--ease),
+    border-color 120ms var(--ease);
+}
+.btn.primary {
+  min-height: 48px;
+  padding: 0 22px;
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--action-ink);
+}
+.btn .arrow {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  transition: transform 120ms var(--ease);
+}
+.btn.quiet {
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+}
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    transform: translateY(-1px);
+    background: var(--surface-2);
+    border-color: var(--control-line);
+    transition-duration: 150ms;
+  }
+  .btn.primary:hover {
+    background: var(--action-hover);
+    border-color: var(--action-hover);
+  }
+  .btn.quiet:hover {
+    background: var(--hover);
+    border-color: transparent;
+    color: var(--text);
+  }
+  .btn:hover .arrow {
+    transform: translateX(3px);
+    transition-duration: 150ms;
+  }
+}
+.btn:active {
+  transform: translateY(1px) scale(0.985);
+  transition-duration: 90ms;
+}
+
+/* Links: a faint hairline, and an ink line that draws in from the left. */
+.link {
+  color: inherit;
+  text-decoration: none;
+  background:
+    linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat,
+    linear-gradient(var(--border-strong), var(--border-strong)) 0 100% / 100% 1px no-repeat;
+  padding-bottom: 2px;
+  transition: background-size 120ms var(--ease);
+}
+.link:hover,
+.link:focus-visible {
+  background-size:
+    100% 1px,
+    100% 1px;
+  transition-duration: 150ms;
+}
+
+/* Sections */
+section > .wrap > h2 {
+  font: 650 26px/1.2 var(--display);
+  letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+.intro {
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+h3 {
+  font: 600 16px/1.35 var(--display);
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+}
+
+.setup {
+  border-top: 1px solid var(--border);
+  padding: 40px 0 64px;
+  outline: none;
+}
+.rows {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--edge);
+}
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 32px;
+  align-items: center;
+  padding: 20px 22px;
+}
+.row + .row {
+  border-top: 1px solid var(--border);
+}
+.row-text p {
+  max-width: 48em;
+  font-size: 14px;
+  color: var(--muted);
+}
+.row-act {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.status {
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.status:empty {
+  display: none;
+}
+.row[data-state="done"] .status {
+  color: var(--ok);
+}
+.row[data-state="done"] .status::before {
+  content: "✓ ";
+}
+.row[data-state="bad"] .status {
+  color: var(--err);
+}
+
+.ways {
+  border-top: 1px solid var(--border);
+  padding: 56px 0 72px;
+}
+.ways-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+}
+.way p {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 16px;
+  min-height: 3em;
+}
+.stage {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--edge);
+}
+.mini-name {
+  display: flex;
+  flex-direction: column;
+  font: 600 12px/1.25 var(--sans);
+}
+.mini-name small {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--head-muted);
+}
+.mini-photo {
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+}
+.mini-photo img {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 648 / 322;
+  object-fit: cover;
+}
+
+/* A right-click menu as Chrome draws it, with LinkUnzip's entry picked. */
+.stage-link {
+  position: absolute;
+  top: 18px;
+  left: 22px;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ctx {
+  width: min(232px, 80%);
+  margin-top: 30px;
+  padding: 5px 0;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 10px 24px -10px rgba(0, 0, 0, 0.3);
   font-size: 13px;
 }
-
-summary {
-  cursor: pointer;
+.ctx > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 14px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 5px 0;
+}
+.ctx .hit {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 500;
+}
+.ctx .hit img {
+  border-radius: 3px;
+  flex: none;
 }
 
-code {
-  display: block;
-  margin-top: 4px;
+/* The popup's paste box, small. */
+.mini {
+  width: 84%;
+}
+.mini-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 10px 10px 0 0;
+  background: var(--head);
+  color: var(--head-text);
+}
+.mini-bar img {
+  width: auto;
+  height: 18px;
+}
+.mini-bar .word {
+  font-size: 12px;
+}
+.mini-body {
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: var(--surface);
+}
+.mini-field {
   padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font: 13px/1.4 var(--mono);
-  color: var(--accent);
-  user-select: all;
+  border: 1px solid var(--control-line);
+  border-radius: 7px;
+  font: 11.5px var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mini-go {
+  display: grid;
+  place-items: center;
+  height: 30px;
+  margin-top: 8px;
+  border-radius: 7px;
+  background: var(--action);
+  color: var(--action-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.foot {
+  border-top: 1px solid var(--border);
+  padding: 28px 0 48px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.foot .wrap {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px 24px;
+}
+.foot nav {
+  display: flex;
+  gap: 20px;
+}
+
+/* The hero's entrance, once: the headline rises out of its mask, then the lines under it fade up
+   12px, the popup settles from .98. Before welcome.js has the words in the right language they
+   wait, at most 700ms (welcome-enter.js); without script or with reduced motion all of it stands. */
+html.m-enter:not(.m-enter-done):not(.m-ready) .hero [data-rise],
+html.m-enter:not(.m-enter-done):not(.m-ready) h1 .line {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  html.m-ready h1 .line {
+    animation: rise 700ms var(--ease-enter) both;
+  }
+  html.m-ready .hero [data-rise] {
+    animation: fade-up 520ms var(--ease-enter) both;
+    animation-delay: 380ms;
+  }
+  html.m-ready .hero .ready[data-rise] {
+    animation-delay: 0ms;
+  }
+  html.m-ready .hero .cta[data-rise] {
+    animation-delay: 440ms;
+  }
+  html.m-ready .hero .note[data-rise] {
+    animation-delay: 500ms;
+  }
+  html.m-ready .hero [data-settle] {
+    animation: settle 900ms var(--ease-enter) both;
+  }
+}
+@keyframes rise {
+  from {
+    transform: translateY(105%);
+  }
+}
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+@keyframes settle {
+  from {
+    transform: scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .btn .arrow,
+  .link,
+  .pin-x {
+    transition-property: background-color, border-color, color;
+  }
+  .btn:hover,
+  .btn:active,
+  .btn:hover .arrow {
+    transform: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .wrap {
+    padding: 0 16px;
+  }
+  .hero-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 36px;
+    padding-top: 32px;
+  }
+  .hero-shot {
+    width: min(100%, 300px);
+  }
+  .ways-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+  .way p {
+    min-height: 0;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+  .row-act {
+    justify-content: flex-start;
+  }
+  .pin {
+    left: 16px;
+    right: 16px;
+    width: auto;
+  }
+}
+@media (max-width: 480px) {
+  .btn {
+    width: 100%;
+  }
+  .cta .btn {
+    width: 100%;
+  }
 }

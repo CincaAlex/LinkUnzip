@@ -4,11 +4,15 @@
 // Names, paths and messages come from archives and servers we do not control, so everything is
 // put on the page with textContent (via h()), never innerHTML.
 
+import { browserPage, isEdge } from "./config.js";
 import { h } from "./dom.js";
 import { fileList } from "./filelist.js";
-import { askFolderPermission, folderPermission, getFolder, pickFolder as showFolderPicker, setFolder } from "./folder.js";
-import { clock, fileNameFromUrl, folderNameFor, hostOf, humanBytes, humanDuration, joinPath, sitePattern } from "./fmt.js";
+import { askFolderPermission, folderPermission, getFolder, pickFolder as showFolderPicker, recentFolders, rememberFolder, setFolder } from "./folder.js";
+import { clock, fileNameFromUrl, files, folderNameFor, hostOf, humanBytes, humanDuration, joinPath, safeName, sitePattern } from "./fmt.js";
 import { LANGUAGES, browserLanguage as navigatorLanguage, list, loadLanguage, num, t, tn, translatePage } from "./i18n.js";
+import { accessRefused, describeError } from "./popup-errors.js";
+import { menu } from "./menu.js";
+import { recentList, sampleTool, shareTool } from "./popup-tools.js";
 import { engineFor, helperCanExtract } from "./route.js";
 import { ALL_SITES, DEFAULT_SETTINGS, applyTheme, effectiveTheme, loadSettings } from "./settings.js";
 
@@ -16,8 +20,8 @@ const view = document.getElementById("view");
 const windowMode = new URLSearchParams(location.search).has("window");
 if (windowMode) document.body.classList.add("window-mode");
 
-// hostInfo: the engine's hello (what it can do); helperInfo: the Windows helper's, if installed.
-let st = { jobs: {}, current: null, hostInfo: null, hostError: null, helperInfo: null };
+// engineInfo: the engine's hello; helperInfo: the Windows helper's, if installed.
+let st = { jobs: {}, current: null, engineInfo: null, engineError: null, helperInfo: null };
 let settings = { ...DEFAULT_SETTINGS };
 // What the user typed or chose for each job, so neither a redraw nor closing the popup loses it.
 let drafts = {};
@@ -28,9 +32,6 @@ let drawn = ""; // which job/phase is on screen
 let updater = null; // redraws the live numbers of the current view without rebuilding it
 
 const send = (cmd, data = {}) => chrome.runtime.sendMessage({ cmd, ...data });
-
-/** What the engine can do (`hello.features`). */
-const hasFeature = (name) => Boolean(st.hostInfo?.features?.includes(name));
 
 function draftFor(job) {
   const d = (drafts[job.id] = { include: "", force: false, ...drafts[job.id] });
@@ -94,8 +95,8 @@ async function loadState() {
   st = {
     jobs: s.jobs || {},
     current: s.current || null,
-    hostInfo: s.engineInfo || null,
-    hostError: null,
+    engineInfo: s.engineInfo || null,
+    engineError: null,
     helperInfo: s.hostInfo || null,
   };
   drafts = s.drafts || {};
@@ -135,7 +136,6 @@ function roughly(secs) {
 }
 
 /** "1 file", "5,518 files". */
-const files = (n) => tn("{count} file", "{count} files", n);
 
 const WINDOW_URL = chrome.runtime.getURL("popup.html");
 
@@ -161,12 +161,11 @@ async function openLinkUnzipWindow(query = "") {
 /** Chrome's folder picker (window only). null when cancelled or refused (said in `problem`). */
 async function chooseFolder(problem) {
   try {
-    return await showFolderPicker();
+    const handle = await showFolderPicker();
+    if (handle) await rememberFolder(handle).catch(() => {});
+    return handle;
   } catch (e) {
-    if (problem) {
-      problem.textContent = t("Chrome didn't allow that folder: {error}", { error: e.message });
-      problem.hidden = false;
-    }
+    if (problem) showProblem(problem, t("{browser} didn't allow that folder: {error}", { error: e.message }));
     return null;
   }
 }
@@ -176,7 +175,7 @@ async function chooseBaseFolder(problem) {
   const handle = await chooseFolder(problem);
   if (!handle) return null;
   await setFolder("base", handle);
-  await send("baseFolderChanged");
+  await send("folderChanged");
   return handle;
 }
 
@@ -186,6 +185,18 @@ async function chooseJobFolder(job, d, problem) {
   if (!handle) return false;
   await setFolder(`job:${job.id}`, handle);
   if (!(await getFolder("base"))) await setFolder("base", handle);
+  const r = await send("jobFolder", { id: job.id, name: handle.name });
+  if (!r?.ok) return false;
+  d.target = r.target;
+  d.output = r.output;
+  return true;
+}
+
+/** A folder picked before (folder.js recentFolders) for this one job: no picker needed. */
+async function useRecentFolder(job, d, key) {
+  const handle = await getFolder(key);
+  if (!handle) return false;
+  await setFolder(`job:${job.id}`, handle);
   const r = await send("jobFolder", { id: job.id, name: handle.name });
   if (!r?.ok) return false;
   d.target = r.target;
@@ -209,22 +220,17 @@ async function useDownloads(job, d) {
 async function readyFolder(job, d, problem) {
   if (noPicker(d.target)) return d.target;
   if (!d.target && !(await chooseJobFolder(job, d, problem))) {
-    if (problem.hidden) {
-      problem.textContent = t("Choose a folder to extract into.");
-      problem.hidden = false;
-    }
+    if (problem.hidden) showProblem(problem, t("Choose a folder to extract into."));
     return null;
   }
   const handle = await getFolder(d.target.key);
   if (!handle) {
     d.target = null;
-    problem.textContent = t("That folder is no longer known to LinkUnzip. Choose it again.");
-    problem.hidden = false;
+    showProblem(problem, t("That folder is no longer known to LinkUnzip. Choose it again."));
     return null;
   }
   if (!(await askFolderPermission(handle))) {
-    problem.textContent = t("Chrome didn't let LinkUnzip save into {folder}. Click the button again and choose Allow (or \"Allow on every visit\").", { folder: handle.name });
-    problem.hidden = false;
+    showProblem(problem, t("{browser} didn't let LinkUnzip save into {folder}. Click the button again and choose Allow (or \"Allow on every visit\").", { folder: handle.name }));
     return null;
   }
   return d.target;
@@ -259,10 +265,7 @@ async function startExtraction(job, d, request, problem) {
   pending = null;
   await chrome.storage.session.remove("pendingExtract");
   const res = await send("extract", { ...request, id: job.id, target, output: d.output });
-  if (res && !res.ok) {
-    problem.textContent = res.error;
-    problem.hidden = false;
-  }
+  if (res && !res.ok) showProblem(problem, res.error);
 }
 
 /**
@@ -273,13 +276,14 @@ function passwordField(job, text, { onEnter = null } = {}) {
   const id = `password-${job.id}`;
   const input = h("input", { type: "password", id, autocomplete: "off", spellcheck: "false", value: typedPasswords.get(job.id) || "" });
   input.addEventListener("input", () => typedPasswords.set(job.id, input.value));
-  if (onEnter) input.addEventListener("keydown", (e) => e.key === "Enter" && onEnter());
-  const reveal = h("button", { type: "button", class: "link small", "aria-pressed": "false" }, t("Show"));
+  // Enter that confirms an IME candidate (Japanese, Chinese, Korean input) is not a submit.
+  if (onEnter) input.addEventListener("keydown", (e) => e.key === "Enter" && !e.isComposing && e.keyCode !== 229 && onEnter());
+  // The label says what a click does (Show / Hide), so no pressed state on top of it.
+  const reveal = h("button", { type: "button", class: "link small", "aria-controls": id }, t("Show"));
   reveal.addEventListener("click", () => {
     const shown = input.type === "password";
     input.type = shown ? "text" : "password";
     reveal.textContent = shown ? t("Hide") : t("Show");
-    reveal.setAttribute("aria-pressed", String(shown));
   });
   return h(
     "div",
@@ -309,7 +313,9 @@ function folderField(label, d, job, { compact = false, onChange = () => {} } = {
       by,
     );
   }
-  const text = h("span", { class: "folder-name" });
+  // The button keeps its visible name (Change...); where the files go is its description.
+  const labelId = `folder-label-${job.id}`;
+  const text = h("span", { class: "folder-name", id: `folder-name-${job.id}` });
   const problem = h("p", { class: "notice bad", hidden: true });
   const back = h("button", { class: "link small", type: "button" }, t("Save to Downloads instead"));
   const showPlace = () => {
@@ -322,7 +328,7 @@ function folderField(label, d, job, { compact = false, onChange = () => {} } = {
     {
       class: "btn browse",
       type: "button",
-      "aria-label": t("Choose the folder to extract into"),
+      "aria-describedby": `${labelId} ${text.id}`,
       onclick: async () => {
         if (!windowMode) return openLinkUnzipWindow("&change=1");
         problem.hidden = true;
@@ -340,16 +346,43 @@ function folderField(label, d, job, { compact = false, onChange = () => {} } = {
       onChange();
     }
   });
+  // The folders picked lately, one click each (Chrome may still ask to allow writing at Start).
+  const recent = h("div", { class: "folder-recent", hidden: true });
+  recentFolders().then((list) => {
+    if (!list.length) return;
+    recent.append(
+      h("span", { class: "muted small" }, t("Recent:")),
+      ...list.map((f) =>
+        h(
+          "button",
+          {
+            type: "button",
+            class: "link small",
+            title: t("Extract into {folder}", { folder: f.name }),
+            onclick: async () => {
+              if (await useRecentFolder(job, d, f.key)) {
+                showPlace();
+                onChange();
+              }
+            },
+          },
+          f.name,
+        ),
+      ),
+    );
+    recent.hidden = false;
+  });
   showPlace();
   const choosing = windowMode && new URLSearchParams(location.search).has("change");
   return h(
     "div",
     { class: "field" },
-    h("span", { class: compact ? "sr-only" : "label" }, label),
+    h("span", { class: compact ? "sr-only" : "label", id: labelId }, label),
     h("div", { class: "path-row folder-row" }, change, text),
     h("div", { class: "folder-more" }, back),
+    recent,
     by,
-    choosing ? h("p", { class: "muted small" }, t("Chrome doesn't let extensions pick Downloads, Desktop or Documents themselves: pick or make a folder inside one of them (Downloads > LinkUnzip, for example).")) : null,
+    choosing ? h("p", { class: "muted small" }, t("{browser} doesn't let extensions pick Downloads, Desktop or Documents themselves: pick or make a folder inside one of them (Downloads > LinkUnzip, for example).")) : null,
     problem,
   );
 }
@@ -358,8 +391,17 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   if (area !== "session") return;
   if (changes.jobs) st.jobs = changes.jobs.newValue || {};
   if ("current" in changes) st.current = changes.current.newValue || null;
-  if (changes.engineInfo) st.hostInfo = changes.engineInfo.newValue || null;
+  if (changes.engineInfo) st.engineInfo = changes.engineInfo.newValue || null;
   if (changes.hostInfo) st.helperInfo = changes.hostInfo.newValue || null;
+  // Ticks set elsewhere (a share link, the image grid): take them, and redraw if they are this zip's.
+  if (changes.drafts) {
+    const theirs = changes.drafts.newValue || {};
+    for (const [id, d] of Object.entries(theirs)) {
+      if (!d?.marks || JSON.stringify(d.marks) === JSON.stringify(drafts[id]?.marks)) continue;
+      drafts[id] = { ...drafts[id], marks: d.marks };
+      if (id === st.current) drawn = "";
+    }
+  }
   render();
 });
 
@@ -396,7 +438,7 @@ function render() {
 }
 
 function statusText(job) {
-  if (!job) return st.hostError ? t("Engine stopped") : t("Ready");
+  if (!job) return st.engineError ? t("Engine stopped") : t("Ready");
   const words = { inspecting: t("Reading index..."), ready: t("Ready"), extracting: t("Extracting"), done: t("Done"), cancelled: t("Stopped") };
   return words[job.phase] || t("Error");
 }
@@ -408,10 +450,10 @@ function jobLine(job) {
   if (!job) return line.replaceChildren();
   const host = hostOf(job.url);
   // A zip inside a zip: the outer one's name first, and the way back to it.
-  const name = job.parentId ? `${job.outerName} › ${job.name}` : job.name;
+  const name = job.parentId ? `${safeName(job.outerName)} › ${safeName(job.name)}` : safeName(job.name);
   line.replaceChildren(h("span", { class: "name", title: job.url }, host ? `${name} · ${host}` : name));
   if (job.parentId && st.jobs[job.parentId] && job.phase !== "extracting") {
-    const back = t("Back to {zip}", { zip: job.outerName });
+    const back = t("Back to {zip}", { zip: safeName(job.outerName) });
     line.prepend(h("button", { type: "button", title: back, "aria-label": back, onclick: () => send("back", { id: job.id }) }, "‹"));
   }
   if (job.phase !== "extracting") {
@@ -426,16 +468,24 @@ function announce(text) {
   if (text) requestAnimationFrame(() => (region.textContent = text));
 }
 
+/** Show a problem in its notice and say it (a notice that only appears is not read out). */
+function showProblem(problem, text) {
+  problem.textContent = text;
+  problem.hidden = false;
+  announce(text);
+}
+
 /** One sentence for a job's new phase (errors announce themselves: their hero is an alert). */
 function spokenState(job) {
   const r = job.report;
+  const zip = safeName(job.name);
   switch (job.phase) {
     case "inspecting":
-      return t("Reading the index of {zip}.", { zip: job.name });
+      return t("Reading the index of {zip}.", { zip });
     case "ready":
-      return t("{zip}: {files}. Tick what you want, then Extract.", { zip: job.name, files: files(r.files) });
+      return t("{zip}: {files}. Tick what you want, then Extract.", { zip, files: files(r.files) });
     case "extracting":
-      return t("Extracting {zip}.", { zip: job.name });
+      return t("Extracting {zip}.", { zip });
     case "done":
       return t("Extracted {files}.", { files: files(job.result.files) });
     case "cancelled":
@@ -447,14 +497,14 @@ function spokenState(job) {
 
 function renderChip() {
   const chip = document.getElementById("host-chip");
-  const [state, word, title] = st.hostError
-    ? ["bad", t("Stopped"), st.hostError.message]
-    : st.hostInfo
+  const [state, word, title] = st.engineError
+    ? ["bad", t("Stopped"), st.engineError.message]
+    : st.engineInfo
       ? ["ok", t("In browser"), t("LinkUnzip works right here in the browser: nothing to install")]
       : ["unknown", t("Starting..."), ""];
   chip.dataset.state = state;
-  chip.title = title;
-  chip.replaceChildren(`${t("Engine")} `, h("b", {}, word));
+  chip.title = title ? `${t("Engine")} ${word}: ${title}` : `${t("Engine")} ${word}`;
+  chip.replaceChildren(h("span", { class: "sr-only" }, `${t("Engine")} ${word}`));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -510,11 +560,11 @@ function openSetup() {
 }
 
 function hostBanner() {
-  if (!st.hostError) return null;
+  if (!st.engineError) return null;
   return h(
     "div",
     { class: "card" },
-    h("p", {}, st.hostError.message),
+    h("p", {}, st.engineError.message),
     h("div", { class: "btn-row" }, h("button", { class: "btn", onclick: () => location.reload() }, t("Try again"))),
   );
 }
@@ -530,8 +580,21 @@ function pickView() {
     const url = input.value.trim();
     if (url) start(url);
   };
-  input.addEventListener("keydown", (e) => e.key === "Enter" && go());
+  // Enter that confirms an IME candidate (Japanese, Chinese, Korean input) does not start yet.
+  input.addEventListener("keydown", (e) => e.key === "Enter" && !e.isComposing && e.keyCode !== 229 && go());
   const list = h("div", { class: "card panel links", hidden: true });
+  const problem = h("p", { class: "notice bad", hidden: true });
+  const inspect = h("button", { class: "btn primary small", type: "button", onclick: go }, t("Inspect"));
+  // Reading the clipboard needs Chrome's OK once (an optional permission, asked in this click).
+  const paste = async () => {
+    problem.hidden = true;
+    const allowed = await chrome.permissions.request({ permissions: ["clipboardRead"] }).catch(() => false);
+    if (!allowed) return showProblem(problem, t("{browser} didn't let LinkUnzip read the clipboard. Paste the link into the box instead."));
+    const text = (await navigator.clipboard.readText().catch(() => "")).trim();
+    if (!/^https?:\/\/\S+$/i.test(text)) return showProblem(problem, t("The clipboard doesn't hold a link."));
+    input.value = text;
+    inspect.focus();
+  };
   show(
     panel(
       h("h1", {}, t("Extract a ZIP without saving it")),
@@ -540,23 +603,35 @@ function pickView() {
         { class: "muted" },
         t("Paste a link to a .zip, or right-click one on any page. LinkUnzip reads the index first, then streams every file straight into a folder."),
       ),
-      h("div", { class: "url-row" }, input, h("button", { class: "btn primary", onclick: go }, t("Inspect"))),
+      h("div", { class: "url-row" }, input, h("button", { class: "btn small", type: "button", onclick: paste }, t("Paste")), inspect),
+      problem,
     ),
     hostBanner(),
     list,
   );
   input.focus();
+  if (settings.rememberRecent) {
+    recentList(start).then((box) => {
+      if (box && drawn === "pick") list.before(box);
+    });
+  }
   findZipLinks().then((links) => {
     if (!links.length || drawn !== "pick") return;
     list.hidden = false;
+    // Under the logo: how many were found, and a way to the list.
+    const line = document.getElementById("job-line");
+    line.hidden = false;
+    line.replaceChildren(
+      h("button", { type: "button", class: "page-pill", onclick: () => list.querySelector(".link-item")?.focus() }, tn("{count} zip on this page", "{count} zips on this page", links.length)),
+    );
     list.append(
       h("h2", {}, t("ZIP links on this page")),
       ...links.map((l) =>
         h(
           "button",
           { class: "link-item", onclick: () => start(l.href, l.pageUrl) },
-          h("span", { class: "l1" }, l.text || fileNameFromUrl(l.href)),
-          h("span", { class: "l2" }, `${hostOf(l.href)} · ${fileNameFromUrl(l.href)}`),
+          h("span", { class: "l1" }, safeName(l.text || fileNameFromUrl(l.href))),
+          h("span", { class: "l2" }, `${hostOf(l.href)} · ${safeName(fileNameFromUrl(l.href))}`),
         ),
       ),
     );
@@ -581,7 +656,7 @@ function inspectingView(job) {
         h("div", {}, h("h1", {}, t("Reading the index...")), note),
       ),
       bar,
-      h("div", { class: "file-head" }, h("span", { class: "name" }, job.name), h("span", { class: "meta" }, hostOf(job.url))),
+      h("div", { class: "file-head" }, h("span", { class: "name" }, safeName(job.name)), h("span", { class: "meta" }, hostOf(job.url))),
     ),
     caughtNotice(job),
     actionBar([dismissBtn(t("Cancel"))]),
@@ -607,7 +682,7 @@ function caughtNotice(job) {
   return h(
     "div",
     { class: "notice" },
-    h("p", { style: "margin:0 0 6px" }, t("Chrome's download of this zip is paused. It is cancelled once LinkUnzip has extracted the files; close this to leave it paused in Chrome's downloads.")),
+    h("p", { style: "margin:0 0 6px" }, t("{browser}'s download of this zip is paused. It is cancelled once LinkUnzip has extracted the files; close this to leave it paused in {browser}'s downloads.")),
     h("button", { class: "link", type: "button", onclick: () => send("continueDownload", { id: job.id }) }, t("Continue the download instead")),
   );
 }
@@ -618,7 +693,12 @@ function caughtNotice(job) {
  * some files ticked (`m`, the file list's measured selection) the numbers are for those files; a
  * normal download still needs the whole zip.
  */
-function costSection(r, m = null) {
+/**
+ * The space a job needs, folded into one line ("Saves 921.6 MB · 1.20 GB to write · (Good)") that
+ * opens into the full comparison. It opens by itself when the files don't fit; `open` keeps what
+ * the user chose for this zip.
+ */
+function costSection(r, m = null, { open = null, onToggle = () => {} } = {}) {
   const write = m ? m.extracted : r.linkunzip_needs;
   const normal = m ? r.archive_size + m.extracted : r.normal_needs;
   const download = m ? m.compressed : r.compressed;
@@ -631,10 +711,15 @@ function costSection(r, m = null) {
   if (r.free != null && fitsHere != null) {
     room = fitsHere ? h("span", { class: "good" }, ` ${t("(Good)")}`) : h("span", { class: "bad" }, ` ${t("(Not enough)")}`);
   }
-  return h(
-    "section",
-    { class: "cost compare", "aria-label": t("Cost Analysis") },
-    h("div", { class: "sec-head" }, h("h2", {}, t("Cost Analysis")), saved > 0 ? h("span", { class: "badge" }, t("Saves {size}", { size: humanBytes(saved) })) : null),
+  const box = h(
+    "details",
+    { class: "cost compare", open: open ?? fitsHere === false },
+    h(
+      "summary",
+      { "aria-label": `${t("Cost Analysis")}: ${saved > 0 ? t("Saves {size}", { size: humanBytes(saved) }) : ""}` },
+      saved > 0 ? h("span", { class: "badge" }, t("Saves {size}", { size: humanBytes(saved) })) : h("b", {}, t("Cost Analysis")),
+      h("span", { class: "cost-line" }, ` ${t("{size} to write", { size: humanBytes(write) })}`, room ? room.cloneNode(true) : null),
+    ),
     h(
       "div",
       { class: "cost-bar", "aria-hidden": "true" },
@@ -652,6 +737,8 @@ function costSection(r, m = null) {
       r.free == null ? null : h("span", {}, `${t("Free space:")} `, h("b", {}, humanBytes(r.free)), room),
     ),
   );
+  box.addEventListener("toggle", () => onToggle(box.open));
+  return box;
 }
 
 function readyView(job) {
@@ -706,13 +793,13 @@ function readyView(job) {
     const heldWhat = t("{types} files until you click Keep on each one ({count} here)", { types, count: num(held) });
     const text = many
       ? [
-          t("{files}: Chrome's downloads save about {rate} files a second, so saving them takes {time}.", { files: files(m.files), rate: DOWNLOADS_PER_SEC, time: roughly(secs) }),
-          held ? t("Chrome also holds back {what}.", { what: heldWhat }) : "",
+          t("{files}: {browser}'s downloads save about {rate} files a second, so saving them takes {time}.", { files: files(m.files), rate: DOWNLOADS_PER_SEC, time: roughly(secs) }),
+          held ? t("{browser} also holds back {what}.", { what: heldWhat }) : "",
           held ? t("A folder you choose is much faster and doesn't ask.") : t("A folder you choose is much faster for this many files."),
         ]
           .filter(Boolean)
           .join(" ")
-      : `${t("Chrome's downloads hold back {what}.", { what: heldWhat })} ${t("A folder you choose doesn't ask.")}`;
+      : `${t("{browser}'s downloads hold back {what}.", { what: heldWhat })} ${t("A folder you choose doesn't ask.")}`;
     slow.replaceChildren(`${text} `, h("button", { class: "link", type: "button", onclick: () => view.querySelector(".folder-row .btn")?.click() }, t("Choose a folder...")));
   };
   const updateGo = () => {
@@ -733,8 +820,7 @@ function readyView(job) {
   const extractNow = async (resume) => {
     problem.hidden = true;
     if (nothing()) {
-      problem.textContent = t("Tick at least one file to extract.");
-      problem.hidden = false;
+      showProblem(problem, t("Tick at least one file to extract."));
       return;
     }
     await startExtraction(job, d, request(resume), problem);
@@ -755,17 +841,26 @@ function readyView(job) {
     go.textContent = goLabel();
     problem.className = "notice";
     problem.textContent = d.target
-      ? t("Chrome needs your OK once to let LinkUnzip save into {folder}. Click the button, then Allow.", { folder: d.output.split(" > ")[0] })
-      : t("Choose where to save: pick or make a folder inside Downloads (Chrome doesn't let extensions use Downloads itself).");
+      ? t("{browser} needs your OK once to let LinkUnzip save into {folder}. Click the button, then Allow.", { folder: d.output.split(" > ")[0] })
+      : t("Choose where to save: pick or make a folder inside Downloads ({browser} doesn't let extensions use Downloads itself).");
     problem.hidden = false;
   }
 
   // The Cost Analysis follows the ticked files once the helper has measured them; with nothing
   // ticked, or while measuring, it keeps what it showed.
-  let cost = costSection(r);
+  const costOptions = {
+    get open() {
+      return d.costOpen ?? null;
+    },
+    onToggle: (open) => {
+      d.costOpen = open;
+      saveDrafts();
+    },
+  };
+  let cost = costSection(r, null, costOptions);
   const updateCost = () => {
     if (nothing() || (selection && !selection.all && !selection.measured)) return;
-    const next = costSection(r, selection?.all ? null : selection?.measured);
+    const next = costSection(r, selection?.all ? null : selection?.measured, costOptions);
     cost.replaceWith(next);
     cost = next;
   };
@@ -817,39 +912,54 @@ function readyView(job) {
     },
     "✕",
   );
-  const chooser =
-    hasFeature("list") && hasFeature("select")
-      ? fileList({
-          job,
-          draft: d,
-          features: { search: hasFeature("search"), measure: hasFeature("measure"), preview: hasFeature("preview"), tickMatches: hasFeature("tick_matches"), inner: hasFeature("inner") && (job.inner?.length || 0) < 4 },
-          api: {
-            list: (dir, offset, limit) => send("list", { id: job.id, dir, offset, limit }),
-            search: (query) => send("search", { id: job.id, query }),
-            measure: (select) => send("measure", { id: job.id, select }),
-            preview: (path) => send("preview", { id: job.id, path }),
-            open: (path) => send("openInner", { id: job.id, path }),
-            tickMatches: (marks, query, ticked) => send("tickMatches", { id: job.id, marks, query, ticked }),
-          },
-          onChange: (sel) => {
-            selection = sel;
-            updateGo();
-            updateCost();
-            saveDrafts();
-          },
-          actions: [patternBtn],
-          toolbar: patternRow,
-        })
-      : null;
+  // Sample and Grid act on the list made just below: they find it when clicked.
+  const getList = () => chooser;
+  const sample = sampleTool({ job, draft: d, getList });
+  // What the ticks come to, as the popup knows it (the measured totals, or the whole zip).
+  const totals = () => {
+    const m = selection?.measured || (!selection || selection.all ? r : null);
+    return { files: m?.files ?? null, bytes: m?.extracted ?? null };
+  };
+  const share = shareTool({ job, draft: d, getList, totals });
+  const gridOpen = () => send("grid", { id: job.id, dir: chooser.where().dir });
+  const chooser = fileList({
+    job,
+    draft: d,
+    features: { search: true, measure: true, preview: true, tickMatches: true, inner: (job.inner?.length || 0) < 4 },
+    api: {
+      list: (dir, offset, limit) => send("list", { id: job.id, dir, offset, limit }),
+      search: (query) => send("search", { id: job.id, query }),
+      measure: (select) => send("measure", { id: job.id, select }),
+      preview: (path) => send("preview", { id: job.id, path }),
+      open: (path) => send("openInner", { id: job.id, path }),
+      tickMatches: (marks, query, ticked) => send("tickMatches", { id: job.id, marks, query, ticked }),
+    },
+    announce,
+    save: () => saveDrafts(),
+    onChange: (sel) => {
+      selection = sel;
+      updateGo();
+      updateCost();
+      saveDrafts();
+    },
+    // Select all / none, Pattern, Sample, Share and Grid share one More menu, so the footer fits
+    // in every language.
+    actions: [
+      menu(t("More"), [
+        { label: t("Select all"), onSelect: () => chooser.selectAll(true) },
+        { label: t("Select none"), onSelect: () => chooser.selectAll(false) },
+        { label: t("Pattern..."), onSelect: () => patternBtn.click() },
+        { label: t("Sample..."), onSelect: () => sample.btn.click() },
+        { label: t("Share..."), onSelect: () => share.btn.click() },
+        settings.imageGrid ? { label: t("Grid"), onSelect: () => gridOpen() } : null,
+      ]),
+    ],
+    toolbar: h("div", { class: "fl-tools" }, patternRow, sample.row, share.row),
+  });
   updateGo();
-  let filter = null;
-  if (chooser) {
-    include.id = `pattern-${job.id}`;
-    include.placeholder = "*.dll, docs/*";
-    patternRow.append(h("label", { for: include.id }, t("Only files matching")), include, clearPattern);
-  } else {
-    filter = h("label", { class: "field" }, h("span", {}, t("Only these files (optional)")), include);
-  }
+  include.id = `pattern-${job.id}`;
+  include.placeholder = "*.dll, docs/*";
+  patternRow.append(h("label", { for: include.id }, t("Only files matching")), include, clearPattern);
 
   const bar = actionBar([
     go,
@@ -864,13 +974,12 @@ function readyView(job) {
   bar.prepend(...[force, slow, problem].filter(Boolean));
 
   // With the file list the panel fills the popup and the list takes the height that is left.
-  if (chooser) document.body.classList.add("fill");
+  document.body.classList.add("fill");
   show(
-    h("div", { class: "card main" }, cost, chooser?.el),
+    h("div", { class: "card main" }, cost, chooser.el),
     r.unsupported > 0
-      ? h("p", { class: "notice" }, `${tn("{count} file uses encryption or a compression LinkUnzip cannot read (e.g. {name}).", "{count} files use encryption or a compression LinkUnzip cannot read (e.g. {name}).", r.unsupported, { name: r.unsupported_sample[0].name })} ${chooser ? t("Untick them or use the filter to skip them.") : t("Use the filter to skip them.")}`)
+      ? h("p", { class: "notice" }, `${tn("{count} file uses encryption or a compression LinkUnzip cannot read (e.g. {name}).", "{count} files use encryption or a compression LinkUnzip cannot read (e.g. {name}).", r.unsupported, { name: safeName(r.unsupported_sample[0].name) })} ${t("Untick them or use the filter to skip them.")}`)
       : null,
-    filter,
     caughtNotice(job),
     locked,
     earlier,
@@ -905,7 +1014,7 @@ function extractingView(job) {
     panel(
       h("p", { class: "path" }, t("Into {folder}", { folder: job.output })),
       isDownloads(job.target) && job.via !== "helper"
-        ? h("p", { class: "muted small" }, t("Saving through Chrome's downloads (its download list stays quiet meanwhile). You can close this popup: LinkUnzip carries on."))
+        ? h("p", { class: "muted small" }, t("Saving through {browser}'s downloads (its download list stays quiet meanwhile). You can close this popup: LinkUnzip carries on."))
         : windowMode && job.via !== "helper"
           ? h("p", { class: "muted small" }, t("Keep this window open until LinkUnzip is done. You can minimise it."))
           : null,
@@ -960,7 +1069,7 @@ function extractingView(job) {
     refs.speed.textContent = `${humanBytes(p.rate)}/s`;
     refs.eta.textContent = clock(p.eta_secs);
     const more = p.active_count > p.active.length ? ` ${t("(+{count} more)", { count: num(p.active_count - p.active.length) })}` : "";
-    refs.now.textContent = p.active.length ? t("now: {files}", { files: `${p.active.join(", ")}${more}` }) : " ";
+    refs.now.textContent = p.active.length ? t("now: {files}", { files: `${p.active.map(safeName).join(", ")}${more}` }) : " ";
     refs.zip.textContent = humanBytes(p.zip_on_disk);
     refs.extracted.textContent = humanBytes(p.extracted + skipped.extracted);
     refs.free.parentElement.hidden = p.free == null;
@@ -1001,10 +1110,10 @@ function doneView(job) {
         h("dt", {}, t("A normal download needs")), h("dd", {}, humanBytes(r.normal_needs)),
         h("dt", {}, t("Disk space saved")), h("dd", { class: "accent" }, humanBytes(saved)),
         r.retries ? h("dt", {}, t("Network retries")) : null, r.retries ? h("dd", {}, num(r.retries)) : null,
-        r.renamed ? h("dt", {}, intoDownloads ? t("Renamed for Chrome") : t("Renamed for Windows")) : null, r.renamed ? h("dd", {}, files(r.renamed)) : null,
+        r.renamed ? h("dt", {}, intoDownloads ? t("Renamed for {browser}") : t("Renamed to safe names")) : null, r.renamed ? h("dd", {}, files(r.renamed)) : null,
       ),
       r.renamed && r.renamed_sample?.length
-        ? h("p", { class: "muted small" }, `${intoDownloads ? t("Chrome's downloads don't take some names, like .gitignore or names with ~, so they got a _:") : t("Names Windows can't store got a _:")} ${r.renamed_sample.map(([from, to]) => t("{from} became {to}", { from, to })).join(", ")}${r.renamed > r.renamed_sample.length ? ", ..." : ""}`)
+        ? h("p", { class: "muted small" }, `${intoDownloads ? t("{browser}'s downloads don't take some names, like .gitignore or names with ~, so they got a _:") : t("Names that Windows can't store got a _, so the files open on any computer:")} ${r.renamed_sample.map(([from, to]) => t("{from} became {to}", { from: safeName(from), to: safeName(to) })).join(", ")}${r.renamed > r.renamed_sample.length ? ", ..." : ""}`)
         : null,
       r.held > 0 ? heldNotice(r) : null,
       r.other_password > 0
@@ -1012,7 +1121,7 @@ function doneView(job) {
             "{count} file in this zip has another password, so it was left out: {names}. Extract it again with that password.",
             "{count} files in this zip have another password, so they were left out: {names}. Extract them again with that password.",
             r.other_password,
-            { names: `${r.other_password_sample.map((n) => n.split("/").pop()).join(", ")}${r.other_password > r.other_password_sample.length ? ", ..." : ""}` },
+            { names: `${r.other_password_sample.map((n) => safeName(n.split("/").pop())).join(", ")}${r.other_password > r.other_password_sample.length ? ", ..." : ""}` },
           ))
         : null,
       r.listing_differs > 0
@@ -1020,7 +1129,7 @@ function doneView(job) {
             "The zip's own index lists {count} file differently from the data that came ({names}). Other zip programs may show it with another size or content.",
             "The zip's own index lists {count} files differently from the data that came ({names}). Other zip programs may show them with another size or content.",
             r.listing_differs,
-            { names: r.listing_differs_sample.join(", ") },
+            { names: r.listing_differs_sample.map(safeName).join(", ") },
           ))
         : null,
       h("p", { class: "path" }, t("In {folder}", { folder: r.output })),
@@ -1038,7 +1147,7 @@ function doneView(job) {
  * a virus scan blocked one. Keep asks Chrome for each file in turn (one question per file).
  */
 function heldNotice(r) {
-  const names = (r.held_sample || []).map((f) => f.name.split("/").pop());
+  const names = (r.held_sample || []).map((f) => safeName(f.name.split("/").pop()));
   const shown = r.held > names.length ? list([...names, t("{count} more", { count: num(r.held - names.length) })]) : list(names);
   const one = r.held === 1;
   const status = h("p", { class: "small", style: "margin:6px 0 0", role: "status" });
@@ -1061,12 +1170,12 @@ function heldNotice(r) {
     "div",
     { class: "notice" },
     h("p", { style: "margin:0 0 6px" }, tn(
-      "Chrome held back {count} file until you say to keep it: {names}. It checked out (size and CRC-32); Chrome asks about files like these from any download.",
-      "Chrome held back {count} files until you say to keep them: {names}. They checked out (size and CRC-32); Chrome asks about files like these from any download.",
+      "{browser} held back {count} file until you say to keep it: {names}. It checked out (size and CRC-32); {browser} asks about files like these from any download.",
+      "{browser} held back {count} files until you say to keep them: {names}. They checked out (size and CRC-32); {browser} asks about files like these from any download.",
       r.held,
       { names: shown },
     )),
-    h("div", { class: "row", style: "gap:14px" }, keep, h("button", { class: "link", type: "button", onclick: () => chrome.tabs.create({ url: "chrome://downloads" }) }, t("Open Chrome's downloads"))),
+    h("div", { class: "row", style: "gap:14px" }, keep, h("button", { class: "link", type: "button", onclick: () => chrome.tabs.create({ url: browserPage("downloads") }) }, t("Open {browser}'s downloads"))),
     status,
   );
 }
@@ -1080,7 +1189,7 @@ function rateLine(job) {
   const line = h(
     "div",
     { class: "rate", role: "note" },
-    h("p", {}, h("b", {}, t("Worked well?")), ` ${t("A rating on the Chrome Web Store helps other people find LinkUnzip.")}`),
+    h("p", {}, h("b", {}, t("Worked well?")), ` ${isEdge() ? t("A rating on Edge Add-ons helps other people find LinkUnzip.") : t("A rating on the Chrome Web Store helps other people find LinkUnzip.")}`),
     h(
       "div",
       { class: "row" },
@@ -1091,8 +1200,8 @@ function rateLine(job) {
   return line;
 }
 
-/** Resume a stopped or failed extraction: only helpers with `resume` skip what is already there. */
-const canResume = (job) => Boolean(job.lastExtract) && hasFeature("resume");
+/** Resume a stopped or failed extraction: it skips what is already there. */
+const canResume = (job) => Boolean(job.lastExtract);
 
 /** In the window, after the toolbar popup handed over a Resume or Extract here: what's left. */
 function handoverNotice(job, d, button) {
@@ -1101,8 +1210,8 @@ function handoverNotice(job, d, button) {
     "p",
     { class: "notice" },
     d.target
-      ? t("Chrome needs your OK once to let LinkUnzip save into {folder}. Click {button}, then Allow.", { folder: d.output.split(" > ")[0], button })
-      : t("Choose where to save, then click {button}. Pick or make a folder inside Downloads (Chrome doesn't let extensions use Downloads itself).", { button }),
+      ? t("{browser} needs your OK once to let LinkUnzip save into {folder}. Click {button}, then Allow.", { folder: d.output.split(" > ")[0], button })
+      : t("Choose where to save, then click {button}. Pick or make a folder inside Downloads ({browser} doesn't let extensions use Downloads itself).", { button }),
   );
 }
 
@@ -1147,179 +1256,8 @@ function cancelledView(job) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Errors
+// Errors (the messages themselves are in popup-errors.js)
 // ---------------------------------------------------------------------------------------
-
-// What using a login means, said before it is used (store policy: disclose first).
-const loginUse = (host) =>
-  t("your browser sends its cookies for {host} with LinkUnzip's requests to {host}, and only there. Nothing goes to LinkUnzip itself.", { host });
-
-const accessRefused = () => t("No problem. Without access to this site LinkUnzip can't read the zip, but you can still download it normally.");
-
-/**
- * What each error code looks like: a title, a sentence or two, and what to offer (the first
- * action is the main button). Codes this version does not know get the helper's own message.
- */
-function describeError(job, e) {
-  const host = hostOf(job.url);
-  const status = e.http_status ? ` (HTTP ${e.http_status})` : "";
-  // A login only helps if none was sent; the user can turn the offer off in Settings.
-  const offerLogin = !job.loginSent && settings.loginWhenNeeded && Boolean(sitePattern(job.url));
-  switch (e.code) {
-    case "site_access":
-      return {
-        title: t("Allow LinkUnzip to read {host}", { host }),
-        text: t("To read the zip without downloading all of it, LinkUnzip needs Chrome's permission to fetch files from {host}. It only connects there when you give it a link.", { host }),
-        more: t("Tip: Settings > Read zip links on every site saves you this step for every new site."),
-        actions: ["access", "download"],
-      };
-    case "ask_where":
-      return {
-        title: t("Chrome asks where to save each download"),
-        text: t("Chrome is set to ask where to save every file, so it would ask once for each file in this zip."),
-        more: t("Turn off \"Ask where to save each file before downloading\" in Chrome's download settings and try again, or choose a folder for LinkUnzip instead."),
-        folder: true,
-        actions: ["chromeSettings", "extractHere"],
-      };
-    case "folder_permission":
-      return { title: t("LinkUnzip needs to write into the folder again"), text: t("Chrome needs your OK again to let LinkUnzip write into this folder."), more: t("Chrome asks again after the browser restarts. Click Extract here and choose Allow."), folder: true, actions: ["extractHere"] };
-    case "no_folder":
-      return { title: t("Choose a folder"), text: t("Pick the folder LinkUnzip should extract into."), folder: true, actions: ["extractHere"] };
-    case "too_big":
-      return { title: t("This zip's index is too big for the browser"), text: e.message, actions: ["download"] };
-    case "host_missing":
-    case "host_forbidden":
-      return { title: t("This needs the LinkUnzip helper for Windows"), text: e.message, actions: ["setup", "download"] };
-    case "host":
-    case "host_silent":
-      return { title: t("LinkUnzip stopped"), text: e.message, actions: ["retry", "download"] };
-    case "no_range":
-      return {
-        title: t("This server sends the zip only from the start"),
-        text: t("It can't send parts of the file (like GitHub's Download ZIP, which builds the zip while it sends it), so there is no file list first. LinkUnzip can still extract all of it in one pass."),
-        more: t("One connection, no size before it starts, and the zip is still never saved. Every file is checked as it arrives."),
-        folder: true,
-        actions: ["stream", "download"],
-      };
-    case "inner_compressed":
-      return {
-        title: t("This zip inside the zip can only be read in one pass"),
-        text: t("It is compressed inside the outer zip, so LinkUnzip can't read just its index first."),
-        more: t("One pass reads it from its first byte to its last, through the outer zip. Every file is checked as it arrives."),
-        folder: true,
-        actions: ["stream"],
-      };
-    case "password_needed":
-      return { title: t("This zip is password-protected"), text: t("Type its password to extract the protected files."), password: true, folder: true, actions: ["withPassword"] };
-    case "password_wrong":
-      return { title: t("That password doesn't fit"), text: t("LinkUnzip checked it on the first protected file before writing anything. Try again."), password: true, folder: true, actions: ["withPassword"] };
-    case "html_page":
-      return {
-        title: t("This link opens a web page, not the file"),
-        text: t("The link answered with a web page instead of the zip. Sites like Google Drive or Dropbox show a page first: open the link, then right-click the page's own download button and choose Extract with LinkUnzip."),
-        more: offerLogin ? t("If that page asks you to sign in, LinkUnzip can use your login on {host}: {how}", { host, how: loginUse(host) }) : null,
-        actions: offerLogin ? ["login", "open", "download"] : ["open", "download"],
-      };
-    case "needs_login":
-      if (offerLogin) {
-        return {
-          title: t("This download needs your login on {host}", { host }),
-          text: t("The site says you need to be signed in. LinkUnzip can use your login on {host}: {how} It starts again right away.", { host, how: loginUse(host) }),
-          actions: ["login", "download"],
-        };
-      }
-      return {
-        title: t("This download needs your login on {host}", { host }),
-        text: job.loginSent
-          ? t("LinkUnzip sent your login, but the site still says no. Open the link, sign in on the page, then try again.")
-          : t("The site says you need to be signed in. Turn on 'Use my login when a site needs it' in Settings, or download the file normally."),
-        actions: job.loginSent ? ["open", "retry", "download"] : ["download"],
-      };
-    case "link_expired":
-      return {
-        title: t("This link has expired"),
-        text: t("Links like this one only work for a while{status}. Go back to the page, get a fresh link and right-click it again.", { status }),
-        actions: job.pageUrl ? ["page"] : [],
-      };
-    case "not_found":
-      return {
-        title: t("The file is gone from the server"),
-        text: t("{host} says there is nothing at this link{status}. It may be old, moved, or mistyped.", { host, status }),
-        actions: ["open"],
-      };
-    case "not_zip":
-      return {
-        title: t("This file isn't a ZIP"),
-        text: t("LinkUnzip only reads .zip archives, and this link gives something else. You can still download it normally."),
-        actions: ["download"],
-      };
-    case "server_error":
-      return {
-        title: t("{host} had a problem", { host }),
-        text: t("The server kept answering with an error{status}. This is usually temporary: try again in a minute.", { status }),
-        actions: ["retry", "download"],
-      };
-    case "redirect_access":
-      if (job.allSites !== true) {
-        return {
-          title: t("{host} sends the download on to another site", { host }),
-          text: t("The link redirects to another server, as many download links do, and LinkUnzip may only read the sites you allowed. Allow every site so it can follow the link."),
-          more: t("LinkUnzip still only connects to the sites your links lead to."),
-          actions: ["accessAll", "download"],
-        };
-      }
-    // falls through: with every site allowed, it really was the connection
-    case "network":
-      if (job.allSites === false) {
-        return {
-          title: t("Can't read from {host}", { host }),
-          text: t("Check your internet connection (or VPN or proxy), then try again."),
-          more: t("If the link sends the download on to another site (many download links do), LinkUnzip needs permission to read there too. Allowing every site covers that."),
-          actions: ["accessAll", "retry"],
-        };
-      }
-      return {
-        title: t("Can't reach {host}", { host }),
-        text: t("Check your internet connection (or VPN or proxy), then try again."),
-        actions: ["retry"],
-      };
-    case "disk_full":
-      return {
-        title: t("Not enough free space"),
-        text: t("The drive is full."),
-        more: t("Choose a folder on a drive with more room."),
-        folder: true,
-        actions: ["extractHere"],
-      };
-    case "folder_not_writable":
-      if (isDownloads(job.target)) {
-        return {
-          title: t("Couldn't save into Downloads"),
-          text: e.message,
-          more: t("Try again, or choose a folder for LinkUnzip instead."),
-          folder: true,
-          actions: ["extractHere"],
-        };
-      }
-      return {
-        title: t("Can't write to this folder"),
-        text: t("Windows didn't let LinkUnzip create files there (no permission, or the path is too long). Choose another folder."),
-        more: e.message,
-        folder: true,
-        actions: ["extractHere"],
-      };
-    case "unsupported_entries":
-      return { title: t("LinkUnzip can't read these files"), text: e.message, actions: ["download"] };
-    case "internal":
-      return {
-        title: t("LinkUnzip hit a bug"),
-        text: t("Nothing more was written. Copy the details and send them to the LinkUnzip developers so it can be fixed."),
-        actions: ["copy", "retry"],
-      };
-    default:
-      return { title: t("Couldn't extract this"), text: e.message || t("Something went wrong."), actions: ["download"] };
-  }
-}
 
 /** Never the path or query of a link in what people copy: they can hold sign-in tokens. */
 function scrubUrls(text) {
@@ -1340,7 +1278,7 @@ async function browserAndOs() {
     }
     return { browser: brand ? `${brand.brand} ${brand.version}` : navigator.userAgent, os };
   } catch {
-    return { browser: navigator.userAgent, os: st.hostInfo?.os || "unknown" };
+    return { browser: navigator.userAgent, os: st.engineInfo?.os || "unknown" };
   }
 }
 
@@ -1363,18 +1301,40 @@ async function detailsText(job, e) {
     .join("\n");
 }
 
+/** Copy the error's details; true when they are on the clipboard. */
+async function copyDetails(job, e) {
+  const text = await detailsText(job, e);
+  try {
+    await navigator.clipboard.writeText(text);
+    announce(t("Details copied."));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function copyDetailsBtn(job, e, cls) {
   const btn = h("button", { class: cls }, t("Copy details"));
   btn.addEventListener("click", async () => {
-    const text = await detailsText(job, e);
-    try {
-      await navigator.clipboard.writeText(text);
-      btn.textContent = t("Copied");
-      announce(t("Details copied."));
-    } catch {
-      btn.textContent = t("Couldn't copy");
-    }
+    btn.textContent = (await copyDetails(job, e)) ? t("Copied") : t("Couldn't copy");
     setTimeout(() => (btn.textContent = t("Copy details")), 2000);
+  });
+  return btn;
+}
+
+const NEW_ISSUE_URL = "https://github.com/CincaAlex/LinkUnzip/issues/new";
+
+/** A bug in LinkUnzip: copy the details, then open a new issue where they can be pasted. */
+function reportBtn(job, e) {
+  const btn = h("button", { title: t("Copies the details and opens a new issue on GitHub") }, t("Report it"));
+  btn.addEventListener("click", async () => {
+    // Copied first: opening the tab closes the toolbar popup.
+    const copied = await copyDetails(job, e);
+    if (!copied) {
+      btn.textContent = t("Couldn't copy");
+      setTimeout(() => (btn.textContent = t("Report it")), 2000);
+    }
+    chrome.tabs.create({ url: NEW_ISSUE_URL });
   });
   return btn;
 }
@@ -1393,7 +1353,7 @@ function askForAccess(job, note) {
 
 function errorView(job) {
   const e = job.error || { code: "failed", message: t("Something went wrong.") };
-  const info = describeError(job, e);
+  const info = describeError(job, e, settings);
   const host = hostOf(job.url);
   const web = /^https?:/i.test(job.url);
   const d = draftFor(job);
@@ -1424,8 +1384,8 @@ function errorView(job) {
         onclick: () => {
           const password = typedPasswords.get(job.id);
           if (!password) {
-            problem.textContent = t("Type the password first.");
-            problem.hidden = false;
+            showProblem(problem, t("Type the password first."));
+            document.getElementById(`password-${job.id}`)?.focus();
             return;
           }
           startExtraction(job, d, { ...extractAgain(job), password }, problem);
@@ -1436,7 +1396,7 @@ function errorView(job) {
       h("button", {
         onclick: () => (job.lastExtract ? startExtraction(job, d, extractAgain(job), problem) : send("retry", { id: job.id })),
       }, isDownloads(d.target) ? t("Try again") : t("Extract here")),
-    chromeSettings: () => h("button", { onclick: () => chrome.tabs.create({ url: "chrome://settings/downloads" }) }, t("Open Chrome's download settings")),
+    chromeSettings: () => h("button", { onclick: () => chrome.tabs.create({ url: browserPage("settings/downloads") }) }, t("Open {browser}'s download settings")),
     login: () => h("button", { onclick: () => send("useLogin", { id: job.id }) }, t("Use my login on {host}", { host })),
     retry: () => h("button", { onclick: () => send("retry", { id: job.id }) }, t("Try again")),
     resume: () => h("button", { onclick: () => startExtraction(job, d, { ...extractAgain(job), resume: true }, problem) }, t("Resume")),
@@ -1449,12 +1409,13 @@ function errorView(job) {
           ? h("button", { onclick: () => send("downloadNormally", { url: job.url }) }, t("Download normally"))
           : null,
     copy: () => copyDetailsBtn(job, e, "btn"),
+    report: () => reportBtn(job, e),
   };
   // An extraction that failed part way can carry on where it stopped (not for setup problems).
   let wanted = info.actions;
   if (job.failedWhile === "extract" && canResume(job) && !["host_missing", "host_forbidden", "password_needed", "password_wrong"].includes(e.code)) {
     wanted = wanted.filter((a) => a !== "retry");
-    const keepFirst = ["extractHere", "login", "copy"].includes(wanted[0]);
+    const keepFirst = ["extractHere", "login", "copy", "report"].includes(wanted[0]);
     wanted = keepFirst ? [wanted[0], "resume", ...wanted.slice(1)] : ["resume", ...wanted];
   }
   const buttons = wanted.map((a) => actions[a]()).filter(Boolean);
@@ -1492,6 +1453,8 @@ function setupSettings() {
     loginWhenNeeded: document.getElementById("set-login"),
     loginEverywhere: document.getElementById("set-login-all"),
     catchDownloads: document.getElementById("set-catch"),
+    rememberRecent: document.getElementById("set-recent"),
+    imageGrid: document.getElementById("set-grid"),
     useHelper: document.getElementById("set-helper"),
   };
   const save = () => {
@@ -1501,6 +1464,8 @@ function setupSettings() {
       loginWhenNeeded: fields.loginWhenNeeded.checked,
       loginEverywhere: fields.loginEverywhere.checked,
       catchDownloads: fields.catchDownloads.checked,
+      rememberRecent: fields.rememberRecent.checked,
+      imageGrid: fields.imageGrid.checked,
       useHelper: fields.useHelper.checked,
     };
     chrome.storage.local.set({ settings });
@@ -1539,6 +1504,8 @@ function setupSettings() {
   fields.loginWhenNeeded.checked = settings.loginWhenNeeded;
   fields.loginEverywhere.checked = settings.loginEverywhere;
   fields.catchDownloads.checked = settings.catchDownloads;
+  fields.rememberRecent.checked = settings.rememberRecent;
+  fields.imageGrid.checked = settings.imageGrid;
   fields.useHelper.checked = settings.useHelper;
   for (const el of Object.values(fields)) el.addEventListener("change", save);
 
@@ -1553,8 +1520,8 @@ function setupSettings() {
     baseField.hidden = settings.saveTo !== "folder";
     saveNote.textContent =
       settings.saveTo === "folder"
-        ? t("Much faster for zips with thousands of files. Chrome asks once to let LinkUnzip save there (and again after a browser restart).")
-        : t("Each zip gets its own folder in Downloads. Nothing to set up; Chrome saves about 6 files a second, so for zips with thousands of files a folder you choose is faster.");
+        ? t("Much faster for zips with thousands of files. {browser} asks once to let LinkUnzip save there (and again after a browser restart).")
+        : t("Each zip gets its own folder in Downloads. Nothing to set up; {browser} saves about 6 files a second, so for zips with thousands of files a folder you choose is faster.");
   };
   const showBase = (handle) => {
     baseName.textContent = handle ? handle.name : t("Not chosen yet");
@@ -1564,7 +1531,7 @@ function setupSettings() {
     settings = { ...settings, saveTo };
     await chrome.storage.local.set({ settings });
     showSave();
-    await send("baseFolderChanged");
+    await send("folderChanged");
   };
   for (const radio of saveRadios) radio.addEventListener("change", () => radio.checked && setSaveTo(radio.value));
   showSave();
@@ -1675,13 +1642,13 @@ if (windowMode && query.has("change")) {
   document.querySelector(".folder-row .btn")?.focus();
 }
 send("ping").then((r) => {
-  const key = () => `${st.hostInfo?.version}|${st.hostInfo?.features}|${Boolean(st.helperInfo)}`;
+  const key = () => `${st.engineInfo?.version}|${Boolean(st.helperInfo)}`;
   const before = key();
-  if (r?.info) st.hostInfo = r.info;
+  if (r?.info) st.engineInfo = r.info;
   if (r?.helper) st.helperInfo = r.helper;
-  st.hostError = r && !r.ok ? r.error : null;
+  st.engineError = r && !r.ok ? r.error : null;
   renderChip();
-  // What this engine allows (the file list, preview) may only be known now.
+  // Whether the helper is there (Settings, where a zip goes) may only be known now.
   if (!currentJob() || key() !== before) {
     drawn = "";
     render();

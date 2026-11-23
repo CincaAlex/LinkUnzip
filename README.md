@@ -67,16 +67,26 @@ LinkUnzip runs entirely inside the browser, and the same tests pass on all three
 Chrome: Windows 11, macOS 15 (Apple silicon, on GitHub Actions) and Ubuntu 24.04. Every test
 downloaded exactly the same bytes on Windows and Linux, and on Mac and Linux the files saved into
 Downloads matched a normal download of the zip byte for byte. Only the optional
-[helper](#optional-the-helper-for-windows) and the [command line](#command-line) are Windows only.
+[helper](#optional-the-helper-for-windows) and its [command line](#command-line) are Windows only;
+*Copy as command* in the popup gives a Python script that runs on all three.
 
 ## Features
 
 - **See the cost first.** Before anything is written, the *Cost Analysis* shows what LinkUnzip will
   write and what a normal download-then-extract would need.
-- **Take only what you need.** Tick files and folders in the *File List*, or search every name with
-  *Filter*. Files you leave out are never downloaded.
+- **Take only what you need.** The *File List* is a tree whose folders open in place: tick files
+  and folders, search every name with *Filter*, or show only *Media*, *Docs* or *Data*. Files you
+  leave out are never downloaded.
+- **Random samples.** *Sample...* ticks N files at random from the whole zip, a folder or the
+  search results, picked from the index without downloading anything.
+- **Share a selection.** *Copy share link* opens the same zip with the same ticks in someone else's
+  LinkUnzip; *Copy as command* gives a Python script (Linux, Mac or Windows, nothing to install), a
+  `remotezip` line or the helper's command line for the same files.
 - **Preview without extracting.** The eye at the end of a file row opens it in a tab: text and code,
-  CSV as a table, images, PDF, audio and video. Only that file is downloaded.
+  CSV and JSON Lines as a table, JSON, NumPy `.npy`, images, PDF, audio and video. Only that file is
+  downloaded. The optional *image grid* shows a folder's images as thumbnails, loaded as you scroll
+  and never saved.
+- **Recent zips and folders**, one click to open or pick again. Kept on your PC only.
 - **Every file checked.** Each file is checked (size and CRC-32) before it gets its real name. A file
   that doesn't check out never appears.
 - **Into Downloads, or a folder you choose.** Downloads needs no setup at all; a folder you choose is
@@ -107,7 +117,7 @@ Brave and Chromium can install it from the Chrome Web Store. You can also
 [run it from source](#build-from-source).
 
 That's all: LinkUnzip works inside the browser. A **Set up LinkUnzip** page opens after you add it,
-where you can let it read zip links on every site at once (otherwise Chrome asks the first time you
+where you can let it read zip links on every site at once (otherwise the browser asks the first time you
 use a link on a new site) and choose where extracted files go.
 
 **Requirements:** Chrome 116 or newer, Edge, Brave or Chromium.
@@ -155,9 +165,10 @@ Files you extracted stay where you put them.
 ## How to use it
 
 1. **Right-click a link** to a `.zip` and choose **Extract with LinkUnzip**. Or click the LinkUnzip
-   icon in the toolbar and paste a link; the popup also lists the zip links on the page you are on.
-2. LinkUnzip reads the zip's index and shows the **Cost Analysis** and the **File List**. Untick what
-   you don't need, or click the eye on a file to look at it first.
+   icon in the toolbar and paste a link (or click **Paste**); the popup also lists the zip links on
+   the page you are on.
+2. LinkUnzip reads the zip's index and shows the space it saves and the **File List**. Click a
+   folder to open it, untick what you don't need, or click the eye on a file to look at it first.
 3. Click **Start Extraction**. The files go into `Downloads\<zip name>`, or into the folder you
    picked with **Change...**. Into Downloads you can close the popup: the toolbar icon shows the
    progress, and a notification tells you when it is done. Into a folder you chose, LinkUnzip works
@@ -167,22 +178,23 @@ Also good to know:
 
 - **Stop** keeps the files that are finished; **Resume** carries on into the same folder.
 - **Download Normal ZIP (Fallback)** hands the link back to your browser if you'd rather have the zip.
-- **Pattern...** under the File List takes a filter such as `*.dll, docs/*`.
+- **More**, under the File List, holds *Select all*, *Select none*, *Pattern...* (a filter such as
+  `*.dll, docs/*`), *Sample...*, *Share...* and, with the image grid on, *Grid*.
 - **Settings** (gear icon): light or dark theme, where files go (Downloads or a folder you choose),
-  parallel connections (1 to 16), reading zip links on every site, the login options, and *Catch
-  .zip downloads*, which offers LinkUnzip whenever the browser starts downloading a zip (off by
-  default).
+  parallel connections (1 to 16), language, reading zip links on every site, the login options,
+  *Catch .zip downloads* (offers LinkUnzip whenever the browser starts downloading a zip), *Remember
+  recent zips* and *Image grid*.
 
 ### Downloads or a folder you choose
 
 | | Downloads (the default) | A folder you choose |
 |---|---|---|
-| Setup | None | Pick the folder once; Chrome asks to let LinkUnzip edit files there (again after a browser restart) |
-| Speed | Chrome saves about 6 files a second, so thousands of files take minutes (the popup says so before you start) | Much faster for many files |
-| Files Chrome asks about | Chrome holds back `.dll`, `.ini`, `.cfg` and `.manifest` files until you click **Keep** on each one | No extra questions |
-| File names | Names Chrome's downloads refuse (like `.gitignore`, or names with `~`) get a `_`, and LinkUnzip lists them | As in the zip, except names Windows can't store |
+| Setup | None | Pick the folder once; the browser asks to let LinkUnzip edit files there (again after a browser restart) |
+| Speed | The browser saves about 6 files a second, so thousands of files take minutes (the popup says so before you start) | Much faster for many files |
+| Files the browser asks about | Chrome and Edge hold back `.dll`, `.ini`, `.cfg` and `.manifest` files until you click **Keep** on each one | No extra questions |
+| File names | Names the browser's downloads refuse (like `.gitignore`, or names with `~`) get a `_`, and LinkUnzip lists them | As in the zip, except names Windows can't store, so the files open on any computer |
 
-Chrome doesn't let extensions pick **Downloads**, **Desktop** or **Documents** themselves as the
+Browsers don't let extensions pick **Downloads**, **Desktop** or **Documents** themselves as the
 folder, only folders inside them: in the picker, open Downloads (or Desktop), click **New folder**,
 call it `LinkUnzip` and pick that.
 
@@ -196,7 +208,7 @@ call it `LinkUnzip` and pick that.
 - The free space on your drive (browsers don't tell extensions).
 
 LinkUnzip is tested in Google Chrome on Windows, macOS and Linux, and also runs in Edge, Brave and
-Chromium. The helper and the command line are Windows only. The extracted files still need their
+Chromium. The helper and its command line are Windows only. The extracted files still need their
 disk space; what LinkUnzip saves is the room the zip would take.
 
 ## Privacy
@@ -235,12 +247,20 @@ That is Chrome's rule for every extension and website: those folders themselves 
 folders inside them can. Downloads works without picking anything (it's the default), and for
 Desktop, make a folder on it (for example `LinkUnzip`) and pick that.
 
-### Why does Chrome ask me to keep some files?
+### Why does my browser ask me to keep some files?
 
-When LinkUnzip saves into Downloads, Chrome treats every file like a download, and it asks before
-keeping types such as `.dll` or `.ini` from any download. LinkUnzip has already checked those files
-(size and CRC-32); the Done screen has **Keep them**, which asks Chrome for each file. Into a folder
-you choose, Chrome doesn't ask.
+When LinkUnzip saves into Downloads, Chrome and Edge treat every file like a download, and they ask
+before keeping types such as `.dll` or `.ini` from any download. LinkUnzip has already checked those
+files (size and CRC-32); the Done screen has **Keep them**, which asks the browser for each file.
+Into a folder you choose, nothing asks.
+
+### Can I share the files I picked?
+
+Yes. *More > Share... > Copy share link* makes a `linkunzip.app/open` link that opens the same zip
+with the same ticks in the other person's LinkUnzip; nothing starts until they click. The zip's
+link and the ticks travel after the `#`, which browsers never send to a server. *Copy as command*
+gives a Python script that takes the same files with nothing installed. For a dataset's README,
+[linkunzip.app/badge](https://linkunzip.app/badge) makes a button with such a link.
 
 ### Windows warns about the installer. Is that normal?
 
@@ -282,6 +302,9 @@ No. The files you extract take the same space as always. LinkUnzip saves the spa
 itself, and the download of everything you leave out.
 
 ## Command line
+
+On any system, *More > Share... > Copy as command* in the popup gives a Python 3 script for the
+files you ticked: it needs nothing installed and never saves the zip.
 
 The [helper](#optional-the-helper-for-windows), `linkunzip.exe`, is also a command-line tool (the
 installer puts it in `%LOCALAPPDATA%\Programs\LinkUnzip`):

@@ -43,7 +43,8 @@ export function sleep(ms, signal) {
   });
 }
 
-function isSigned(url) {
+/** A link with a signature or an expiry in it (S3, Azure, Google Cloud, CDN tokens): it stops working. */
+export function isSigned(url) {
   try {
     const names = [...new URL(url).searchParams.keys()].map((k) => k.toLowerCase());
     return names.some((n) => SIGNATURE_PARAMS.includes(n));
@@ -70,7 +71,8 @@ export function parseContentRange(value) {
   return [Number(m[1]), Number(m[2]), m[3] === "*" ? null : Number(m[3])];
 }
 
-const normalizeEtag = (e) => e.trim().replace(/^W\//, "");
+/** An ETag without its weak mark: `W/"abc"` and `"abc"` name the same version. */
+export const normalizeEtag = (e) => e.trim().replace(/^W\//, "");
 const isWeak = (e) => /^\s*W\//.test(e);
 
 /** The validator If-Range may carry: a strong ETag, else Last-Modified, else none. */

@@ -20,17 +20,23 @@
         <p id="where" class="muted"></p>
       </div>
       <nav class="nav" aria-label="Files in this folder" data-i18n-aria-label>
-        <button id="prev" class="btn" type="button" title="Previous file (Left arrow)" data-i18n-title disabled><span data-i18n>Previous</span></button>
-        <button id="next" class="btn" type="button" title="Next file (Right arrow)" data-i18n-title disabled><span data-i18n>Next</span></button>
+        <button id="back" class="btn" type="button" aria-keyshortcuts="Escape" hidden><span data-i18n>Back to the images</span></button>
+        <button id="prev" class="btn" type="button" title="Previous file (Left arrow)" data-i18n-title aria-keyshortcuts="ArrowLeft" disabled><span data-i18n>Previous</span></button>
+        <button id="next" class="btn" type="button" title="Next file (Right arrow)" data-i18n-title aria-keyshortcuts="ArrowRight" disabled><span data-i18n>Next</span></button>
       </nav>
     </header>
     <div id="bar" class="bar">
-      <span id="stats" class="muted" role="status"></span>
+      <span id="stats" class="muted"></span>
+      <span id="announce" class="sr-only" role="status"></span>
       <span class="spacer"></span>
       <label id="wrap-box" class="check" hidden><input id="wrap" type="checkbox" checked /> <span data-i18n>Wrap lines</span></label>
+      <button id="raw" class="btn" type="button" hidden></button>
       <button id="more" class="btn" type="button" data-i18n hidden>Load more</button>
     </div>
-    <main id="view" tabindex="-1"></main>
+    <main>
+      <div id="view" tabindex="-1"></div>
+      <div id="grid" class="grid" tabindex="-1" hidden></div>
+    </main>
     <script type="module" src="viewer.js"></script>
   </body>
 </html>

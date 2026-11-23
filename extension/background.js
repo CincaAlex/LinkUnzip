@@ -18,12 +18,14 @@
 // A zip's password is kept in this worker's memory only (`passwords`), never in storage: after
 // the worker restarts, the popup asks for it again.
 
-import { REVIEW_URL, UNINSTALL_URL, rateCheck } from "./config.js";
+import { UNINSTALL_URL, rateCheck, reviewUrl } from "./config.js";
 import { folderLabel, getFolder, removeFolder } from "./folder.js";
-import { fileNameFromUrl, folderNameFor, humanBytes, joinPath, sitePattern } from "./fmt.js";
+import { fileNameFromUrl, folderNameFor, humanBytes, joinPath, safeName, sitePattern } from "./fmt.js";
 import { dropPreview, handlePreviewFetch, previewStats, registerPreview } from "./preview.js";
 import { currentLanguage, loadLanguage, t, tn } from "./i18n.js";
 import { engineFor } from "./route.js";
+import { rememberZip } from "./recent.js";
+import { decodeSelection } from "./selection.js";
 import { loadSettings, migrate } from "./settings.js";
 import { indexCache, savedCount } from "./store.js";
 
@@ -42,7 +44,6 @@ let engineInfo = null;
 let engineWaiters = [];
 const jobs = new Map(); // job id -> job
 const passwords = new Map(); // job id -> the zip's password
-const bypass = new Map(); // url -> expiry: downloads we started ourselves ("download normally")
 let currentId = null; // the job the popup shows
 
 const ready = restore();
@@ -95,22 +96,29 @@ async function restore() {
 /** How long a running engine job may stay silent after the worker restarted. */
 const ORPHAN_WAIT_MS = 10_000;
 
-// The popup redraws from storage.session. A job that moved on is written soon; while only its
-// numbers change (progress), not more than about once a second: each write is the whole map.
-const PERSIST_MS = 150;
+// The popup redraws from storage.session. A job that moved on is written right away (changes
+// made in the same turn share one write), so a worker Chrome stops a moment later loses nothing;
+// while only its numbers change (progress), not more than about once a second: each write is the
+// whole map.
 const PROGRESS_PERSIST_MS = 750;
 let persistTimer = null;
-let persistDue = 0;
+let writeQueued = false;
 function persist(soon = true) {
-  const wait = soon ? PERSIST_MS : PROGRESS_PERSIST_MS;
-  if (persistTimer && persistDue <= Date.now() + wait) return;
+  if (!soon) {
+    persistTimer ??= setTimeout(writeJobs, PROGRESS_PERSIST_MS);
+    return;
+  }
+  if (writeQueued) return;
+  writeQueued = true;
+  queueMicrotask(writeJobs);
+}
+
+async function writeJobs() {
   clearTimeout(persistTimer);
-  persistDue = Date.now() + wait;
-  persistTimer = setTimeout(async () => {
-    persistTimer = null;
-    prune();
-    await chrome.storage.session.set({ jobs: Object.fromEntries(jobs), hostInfo, hostError, engineInfo });
-  }, wait);
+  persistTimer = null;
+  writeQueued = false;
+  prune();
+  await chrome.storage.session.set({ jobs: Object.fromEntries(jobs), hostInfo, hostError, engineInfo }).catch(() => {});
 }
 
 // Finished jobs stay until closed, but not forever: the newest KEEP_JOBS that aren't running, none
@@ -389,6 +397,18 @@ async function askAboutJob(job, message, accepts) {
   return reply;
 }
 
+/**
+ * A question about the zip of job `id`, answered by a reply of type `replyType` (`same` tells
+ * this question's answer from another of that type): `{ok: true, reply, job}`, or `{ok: false,
+ * error}` when the job is gone or the engine says no.
+ */
+async function askJob(id, message, replyType, same = () => true) {
+  const job = await readyJob(id);
+  if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
+  const reply = await askAboutJob(job, { ...message, id }, (m) => m.type === replyType && same(m));
+  return reply.type === replyType ? { ok: true, reply, job } : { ok: false, error: reply };
+}
+
 function onReply(msg) {
   for (const w of waiters) {
     if (w.match(msg)) return w.finish(msg);
@@ -412,6 +432,8 @@ function onReply(msg) {
       job.report = msg.report;
       job.indexProgress = null;
       countEarlier(job);
+      noteRecent(job, { size: msg.report.archive_size, files: msg.report.files });
+      if (job.shared) applyShared(job);
       break;
     case "started":
       job.phase = "extracting";
@@ -430,15 +452,15 @@ function onReply(msg) {
       job.phase = "done";
       job.result = msg;
       job.earlier = 0;
-      finishBadge("✓", "#2f9e6f");
       notifyDone(job);
       countForRating(job);
       dropCaughtDownload(job);
+      noteRecent(job, { folder: job.output });
       break;
     case "cancelled":
       job.phase = "cancelled";
       job.result = msg;
-      finishBadge("", "#000000");
+      clearBadge();
       break;
     case "error":
       fail(job, { code: msg.code || "failed", message: msg.message, detail: msg.detail, http_status: msg.http_status, host: msg.host });
@@ -454,6 +476,33 @@ function onReply(msg) {
   }
   syncDownloadUi();
   persist();
+}
+
+/** Recent zips (recent.js): the zips opened here, unless Settings says not to keep them. */
+async function noteRecent(job, details) {
+  if (job.parentId || job.inner?.length) return;
+  if ((await getSettings()).rememberRecent === false) return;
+  await rememberZip({ url: job.url, name: job.name, ...details }).catch(() => {});
+}
+
+/**
+ * A shared link's ticks (fromSite), once the zip's index is read: written where the popup keeps
+ * each zip's ticks (`drafts`), so the file list opens with them. A sample is drawn now, from the
+ * index, with the seed in the link, so everyone gets the same files.
+ */
+async function applyShared(job) {
+  const shared = job.shared;
+  delete job.shared;
+  let marks = shared.marks;
+  if (shared.sample) {
+    const r = await askJob(job.id, { type: "sample", ...shared.sample }, "sampled");
+    if (!r.ok) return;
+    marks = r.reply.marks;
+  }
+  if (!marks) return;
+  const { drafts = {} } = await chrome.storage.session.get("drafts");
+  drafts[job.id] = { ...drafts[job.id], marks };
+  await chrome.storage.session.set({ drafts });
 }
 
 /**
@@ -501,50 +550,94 @@ async function countForRating(job) {
   }
 }
 
-function fail(job, error) {
+/**
+ * The job failed. `quiet` when the user is starting it right then and the popup shows (or is
+ * about to show) the error itself: no "!" and no notification.
+ */
+function fail(job, error, quiet = false) {
   // Whether it failed while reading the index or while extracting decides what "try again" means.
   job.failedWhile = job.phase === "extracting" ? "extract" : "inspect";
   job.phase = "error";
   job.error = error;
-  finishBadge("!", "#d1495b");
+  if (!quiet) notifyFailed(job);
 }
 
 // ---------------------------------------------------------------------------------------
 // Badge and notifications
 // ---------------------------------------------------------------------------------------
+//
+// The badge says what the last job did ("47%", "!" for a failure, a tick when done) and its
+// tooltip says it in words. It stays until the popup or the LinkUnzip window opens (its ping).
 
-let badgeTimer = null;
+const BADGE_TEXT = "#ffffff";
+const BADGE = { progress: "#1d6f6d", error: "#b3263a", done: "#1f7a55" };
+
+function setBadge(text, color, status) {
+  chrome.action.setBadgeTextColor({ color: BADGE_TEXT }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
+  chrome.action.setBadgeText({ text }).catch(() => {});
+  chrome.action.setTitle({ title: t("LinkUnzip: {status}", { status }) }).catch(() => {});
+}
+
+function clearBadge() {
+  chrome.action.setBadgeText({ text: "" }).catch(() => {});
+  chrome.action.setTitle({ title: chrome.runtime.getManifest().action.default_title }).catch(() => {});
+}
 
 function updateBadge(job) {
   const p = job.progress;
   if (!p || !p.total_compressed) return;
   const pct = Math.min(99, Math.floor((p.downloaded / p.total_compressed) * 100));
-  chrome.action.setBadgeBackgroundColor({ color: "#2a9d9a" });
-  chrome.action.setBadgeText({ text: `${pct}%` });
+  setBadge(`${pct}%`, BADGE.progress, t("extracting {name}, {percent}%", { name: safeName(job.name), percent: pct }));
 }
 
-function finishBadge(text, color) {
-  clearTimeout(badgeTimer);
-  chrome.action.setBadgeBackgroundColor({ color });
-  chrome.action.setBadgeText({ text });
-  if (text) badgeTimer = setTimeout(() => chrome.action.setBadgeText({ text: "" }), 8000);
+/** Whether the popup (or the LinkUnzip window) is open on this job right now. */
+async function shownInPopup(job) {
+  if (job.id !== currentId) return false;
+  const popup = chrome.runtime.getURL("popup.html");
+  const open = await chrome.runtime.getContexts({ contextTypes: ["POPUP", "TAB"] }).catch(() => []);
+  return open.some((c) => c.documentUrl?.startsWith(popup));
 }
 
-function notifyDone(job) {
+async function notifyDone(job) {
   const r = job.result;
+  if (await shownInPopup(job)) return clearBadge();
+  setBadge("✓", BADGE.done, t("{name} was extracted", { name: safeName(job.name) }));
   chrome.notifications.create(`done:${job.id}`, {
     type: "basic",
     iconUrl: "icons/icon128.png",
     title: tn("Extracted {count} file", "Extracted {count} files", r.files),
-    message: `${t("{size} written to {folder}", { size: humanBytes(r.extracted_bytes), folder: r.output })}\n${t("Zip stored on disk:")} ${humanBytes(r.zip_bytes_on_disk)}`,
+    message: `${t("{size} written to {folder}", { size: humanBytes(r.extracted_bytes), folder: safeName(r.output) })}\n${t("Zip stored on disk:")} ${humanBytes(r.zip_bytes_on_disk)}`,
+    priority: 1,
+  });
+}
+
+async function notifyFailed(job) {
+  const name = safeName(job.name);
+  const title = job.failedWhile === "extract" ? t("{name} couldn't be extracted", { name }) : t("{name} couldn't be read", { name });
+  if (await shownInPopup(job)) return clearBadge();
+  setBadge("!", BADGE.error, title);
+  chrome.notifications.create(`error:${job.id}`, {
+    type: "basic",
+    iconUrl: "icons/icon128.png",
+    title,
+    message: job.error?.message || t("Open LinkUnzip to see what happened."),
     priority: 1,
   });
 }
 
 chrome.notifications.onClicked.addListener(async (notificationId) => {
   await ready;
-  const job = jobs.get(notificationId.replace(/^done:/, ""));
-  if (job?.via === "helper" && job.result?.output) sendToHost({ type: "reveal", path: job.result.output });
+  const [kind, id] = notificationId.split(/:(.*)/);
+  const job = jobs.get(id);
+  if (kind === "error") {
+    // The popup opens on the job that failed.
+    if (job) {
+      await setCurrent(job.id);
+      persist();
+    }
+    await showPopup();
+  } else if (job?.via === "helper" && job.result?.output) sendToHost({ type: "reveal", path: job.result.output });
   else if (job?.target?.key === "downloads") await openDownloadsFolder(job);
   else await showPopup();
   chrome.notifications.clear(notificationId);
@@ -715,9 +808,13 @@ async function loginAllowed(url) {
   return Boolean(settings.loginEverywhere) || loginSites.includes(originOf(url));
 }
 
-/** The browser sends its cookies for the zip's site only when the user allowed it there. */
+/**
+ * The browser sends its cookies for the zip's site only when the user allowed it there. A link
+ * from a share link never takes the login on its own (not even with Settings' every-site
+ * login): only once the user clicked "Use my login" for that job.
+ */
 async function credentialsFor(job) {
-  job.loginSent = await loginAllowed(job.url);
+  job.loginSent = job.fromShare ? Boolean(job.loginChosen) : await loginAllowed(job.url);
   return job.loginSent ? "include" : "omit";
 }
 
@@ -735,11 +832,13 @@ async function defaultTarget(name) {
 }
 
 /** Start looking at a URL: creates the job and asks the engine to read the zip's index. */
-async function startInspect({ url, pageUrl = "" }) {
+async function startInspect({ url, pageUrl = "", shared = null }, fromShare = false) {
   await ready;
   const id = `j${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const name = fileNameFromUrl(url);
-  const job = { id, url, pageUrl, name, phase: "inspecting", createdAt: Date.now(), ...(await defaultTarget(name)) };
+  // `shared`: ticks from a share link, set once the index is read (applyShared). `fromShare`:
+  // the link came from a share link (fromSite), so the login waits for the user (credentialsFor).
+  const job = { id, url, pageUrl, name, phase: "inspecting", createdAt: Date.now(), ...(shared ? { shared } : {}), ...(fromShare ? { fromShare } : {}), ...(await defaultTarget(name)) };
   jobs.set(id, job);
   await setCurrent(id);
 
@@ -747,7 +846,7 @@ async function startInspect({ url, pageUrl = "" }) {
     fail(job, {
       code: "unsupported_url",
       message: t("LinkUnzip can only read http:// and https:// links. Downloads that live inside the page (blob: links, like WhatsApp Web) cannot be fetched again."),
-    });
+    }, true);
     persist();
     return job;
   }
@@ -763,13 +862,13 @@ async function sendInspect(job) {
   job.via = "engine";
   persist();
   if (!(await siteAllowed(job.url))) {
-    fail(job, { code: "site_access", message: t("LinkUnzip needs your permission to read files from this site.") });
+    fail(job, { code: "site_access", message: t("LinkUnzip needs your permission to read files from this site.") }, true);
     persist();
     return;
   }
   const credentials = await credentialsFor(job);
   if (!(await toEngine({ type: "inspect", id: job.id, url: job.url, inner: job.inner, credentials }))) {
-    fail(job, { code: "host", message: t("LinkUnzip's engine didn't start.") });
+    fail(job, { code: "host", message: t("LinkUnzip's engine didn't start.") }, true);
   }
   persist();
 }
@@ -785,6 +884,8 @@ async function openInner({ id, path }) {
   const inner = [...(parent.inner || []), path];
   const name = path.slice(path.lastIndexOf("/") + 1);
   const child = { id: `${parent.id}-${Date.now().toString(36)}`, url: parent.url, pageUrl: parent.pageUrl, name, inner, parentId: parent.id, outerName: parent.name, phase: "inspecting", createdAt: Date.now(), ...(await defaultTarget(name)) };
+  // Read through the same link: the same rule for the login.
+  if (parent.fromShare) Object.assign(child, { fromShare: true, loginChosen: Boolean(parent.loginChosen) });
   // An encrypted inner zip opens with the outer zip's password.
   if (passwords.has(parent.id)) passwords.set(child.id, passwords.get(parent.id));
   jobs.set(child.id, child);
@@ -828,7 +929,7 @@ async function startExtract({ id, output, target, include = [], select, connecti
     force,
     credentials: await credentialsFor(job),
   });
-  if (!ok) fail(job, { code: "host", message: t("LinkUnzip's engine didn't start.") });
+  if (!ok) fail(job, { code: "host", message: t("LinkUnzip's engine didn't start.") }, true);
   persist();
   return { ok };
 }
@@ -864,7 +965,7 @@ async function startWithHelper(job, { target, include, select, connections, forc
     resume: true,
     drop_top: true,
   });
-  if (!ok) fail(job, hostError || friendlyHostError(""));
+  if (!ok) fail(job, hostError || friendlyHostError(""), true);
   persist();
   return { ok };
 }
@@ -907,6 +1008,56 @@ async function openUiFor(url, pageUrl) {
   await showPopup();
 }
 
+/** The preview tab with `query`: the one already open if there is one (our own pages are listed without the "tabs" permission). */
+async function openViewer(query) {
+  const url = chrome.runtime.getURL(`viewer.html?${query}`);
+  const tabs = await chrome.runtime.getContexts({ contextTypes: ["TAB"] }).catch(() => []);
+  const viewer = tabs.find((c) => c.documentUrl?.startsWith(chrome.runtime.getURL("viewer.html")) && c.tabId >= 0);
+  if (viewer) {
+    await chrome.tabs.update(viewer.tabId, { url, active: true });
+    await chrome.windows.update(viewer.windowId, { focused: true });
+  } else {
+    await chrome.tabs.create({ url });
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// Share links (linkunzip.app/open)
+// ---------------------------------------------------------------------------------------
+//
+// The site's /open page reads a share link (everything after # stays in the browser) and hands
+// it over here: only from https://linkunzip.app (the manifest's externally_connectable), only
+// `ping` and `open`. A shared link only fills in the popup: the zip is read and the ticks set;
+// nothing starts, no folder or setting comes from the link.
+
+const SITE = "https://linkunzip.app";
+const MAX_SHARED_URL = 8192;
+
+async function fromSite(m) {
+  if (m?.type === "ping") return { ok: true, version: chrome.runtime.getManifest().version };
+  if (m?.type !== "open" || m.v !== 1 || typeof m.url !== "string" || m.url.length > MAX_SHARED_URL) {
+    return { ok: false, error: "not a LinkUnzip share link" };
+  }
+  let url;
+  try {
+    url = new URL(m.url);
+  } catch {
+    return { ok: false, error: "not a link" };
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return { ok: false, error: "only http and https links" };
+  // Checked before anything opens: a bad selection is refused as a whole.
+  const shared = typeof m.s === "string" && m.s ? await decodeSelection(m.s) : null;
+  await startInspect({ url: url.href, shared }, true);
+  await showPopup();
+  return { ok: true };
+}
+
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (sender.origin !== SITE) return false;
+  fromSite(message).then(sendResponse, (e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+  return true;
+});
+
 // ---------------------------------------------------------------------------------------
 // Messages from the popup and the viewer
 // ---------------------------------------------------------------------------------------
@@ -917,8 +1068,11 @@ async function readyJob(id) {
 }
 
 const commands = {
-  async ping() {
+  async ping(_m, sender) {
     await ready;
+    // The popup or the LinkUnzip window opened: the "!" or tick has been seen. A running job's
+    // percentage stays.
+    if (sender?.url?.startsWith(chrome.runtime.getURL("popup.html")) && ![...jobs.values()].some(running)) clearBadge();
     await ensureEngine().catch(() => false);
     // The helper is optional: only asked so the popup can offer "Open folder" for its jobs.
     ensureHost().then(() => persist());
@@ -931,7 +1085,7 @@ const commands = {
   extract: startExtract,
   // Where every job goes changed in Settings: jobs not started yet follow it, unless the user
   // chose a place for that one job.
-  async baseFolderChanged({ id } = {}) {
+  async folderChanged({ id } = {}) {
     await ready;
     for (const job of jobs.values()) {
       if (job.phase === "ready" || job.phase === "error" || job.phase === "inspecting") {
@@ -993,31 +1147,23 @@ const commands = {
     return { ok: true };
   },
   async list({ id, dir = "", offset = 0, limit = 500 }) {
-    const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
-    const r = await askAboutJob(job, { type: "list", id, dir, offset, limit }, (m) => m.type === "listing" && m.dir === dir && m.offset === offset);
-    return r.type === "listing" ? { ok: true, listing: r } : { ok: false, error: r };
+    const r = await askJob(id, { type: "list", dir, offset, limit }, "listing", (m) => m.dir === dir && m.offset === offset);
+    return r.ok ? { ok: true, listing: r.reply } : r;
   },
   async search({ id, query, limit = 200 }) {
-    const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
-    const r = await askAboutJob(job, { type: "search", id, query, limit }, (m) => m.type === "search_results" && m.query === query);
-    return r.type === "search_results" ? { ok: true, results: r } : { ok: false, error: r };
+    const r = await askJob(id, { type: "search", query, limit }, "search_results", (m) => m.query === query);
+    return r.ok ? { ok: true, results: r.reply } : r;
   },
   async measure({ id, select }) {
-    const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
-    const r = await askAboutJob(job, { type: "measure", id, select }, (m) => m.type === "measured");
-    return r.type === "measured" ? { ok: true, measured: r } : { ok: false, error: r };
+    const r = await askJob(id, { type: "measure", select }, "measured");
+    return r.ok ? { ok: true, measured: r.reply } : r;
   },
   // The viewer: where one file sits in the zip, so it can fetch and show it itself.
   async entry({ id, path }) {
-    const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
-    const r = await askAboutJob(job, { type: "entry", id, path }, (m) => m.type === "entry" && m.path === path);
-    if (r.type !== "entry") return { ok: false, error: r };
+    const r = await askJob(id, { type: "entry", path }, "entry", (m) => m.path === path);
+    if (!r.ok) return r;
     // An encrypted file opens with the password given for this zip, if there is one.
-    return { ok: true, ...r, name: job.name, password: r.encrypted ? passwords.get(id) ?? null : null };
+    return { ok: true, ...r.reply, name: r.job.name, password: r.reply.encrypted ? passwords.get(id) ?? null : null };
   },
   // The viewer's video, audio and PDF: an address this worker answers from the zip (preview.js).
   async previewStream({ source, entry, mime, password }) {
@@ -1039,17 +1185,15 @@ const commands = {
   },
   // The viewer's Previous / Next.
   async neighbors({ id, path }) {
-    const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
-    const r = await askAboutJob(job, { type: "neighbors", id, path }, (m) => m.type === "neighbors" && m.path === path);
-    return r.type === "neighbors" ? { ok: true, prev: r.prev, next: r.next, position: r.position, total: r.total } : { ok: false, error: r };
+    const r = await askJob(id, { type: "neighbors", path }, "neighbors", (m) => m.path === path);
+    if (!r.ok) return r;
+    const { prev, next, position, total } = r.reply;
+    return { ok: true, prev, next, position, total };
   },
   // "Select all results" in the file list.
   async tickMatches({ id, marks, query, ticked }) {
-    const job = await readyJob(id);
-    if (!job) return { ok: false, error: { message: t("That zip is no longer open in LinkUnzip.") } };
-    const r = await askAboutJob(job, { type: "tick_matches", id, marks, query, ticked }, (m) => m.type === "ticked" && m.query === query);
-    return r.type === "ticked" ? { ok: true, marks: r.marks, matched: r.matched } : { ok: false, error: r };
+    const r = await askJob(id, { type: "tick_matches", marks, query, ticked }, "ticked", (m) => m.query === query);
+    return r.ok ? { ok: true, marks: r.reply.marks, matched: r.reply.matched } : r;
   },
   async clearCache() {
     await indexCache.clear().catch(() => {});
@@ -1065,17 +1209,18 @@ const commands = {
     return commands.dismiss({ id });
   },
   async preview({ id, path }) {
-    const url = chrome.runtime.getURL(`viewer.html?job=${encodeURIComponent(id)}&path=${encodeURIComponent(path)}`);
-    // Our own pages are listed without the "tabs" permission.
-    const tabs = await chrome.runtime.getContexts({ contextTypes: ["TAB"] }).catch(() => []);
-    const viewer = tabs.find((c) => c.documentUrl?.startsWith(chrome.runtime.getURL("viewer.html")) && c.tabId >= 0);
-    if (viewer) {
-      await chrome.tabs.update(viewer.tabId, { url, active: true });
-      await chrome.windows.update(viewer.windowId, { focused: true });
-    } else {
-      await chrome.tabs.create({ url });
-    }
+    await openViewer(`job=${encodeURIComponent(id)}&path=${encodeURIComponent(path)}`);
     return { ok: true };
+  },
+  // The images of one folder as thumbnails (viewer.js, grid mode).
+  async grid({ id, dir = "" }) {
+    await openViewer(`job=${encodeURIComponent(id)}&grid=${encodeURIComponent(dir)}`);
+    return { ok: true };
+  },
+  // "Sample..." in the file list: random files, drawn by the engine from the index.
+  async sample({ id, scope, query, ext, n, seed }) {
+    const r = await askJob(id, { type: "sample", scope, query, ext, n, seed }, "sampled");
+    return r.ok ? { ok: true, ...r.reply } : r;
   },
   async cancel({ id }) {
     const job = await readyJob(id);
@@ -1106,11 +1251,15 @@ const commands = {
       job.askRate = false;
       persist();
     }
-    if (open) await chrome.tabs.create({ url: REVIEW_URL });
+    if (open) await chrome.tabs.create({ url: reviewUrl() });
     return { ok: true };
   },
   async downloadNormally({ url }) {
-    bypass.set(url, Date.now() + 60_000);
+    // Kept in storage.session, not in this worker's memory: Chrome may stop the worker before
+    // the download starts.
+    const bypass = await readBypass();
+    bypass[url] = Date.now() + BYPASS_MS;
+    await chrome.storage.session.set({ bypass });
     await chrome.downloads.download({ url });
     return { ok: true };
   },
@@ -1156,14 +1305,16 @@ const commands = {
     const { loginSites = [] } = await chrome.storage.local.get("loginSites");
     const origin = originOf(job.url);
     if (origin && !loginSites.includes(origin)) await chrome.storage.local.set({ loginSites: [...loginSites, origin] });
+    // A share link's job needs this click for itself (credentialsFor).
+    job.loginChosen = true;
     return retry(job);
   },
 };
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = commands[message?.cmd];
   if (!handler) return false;
-  handler(message).then(sendResponse, (e) => sendResponse({ ok: false, error: String(e) }));
+  handler(message, sender).then(sendResponse, (e) => sendResponse({ ok: false, error: String(e) }));
   return true;
 });
 
@@ -1187,6 +1338,17 @@ chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === MENU_ID && info.linkUrl) openUiFor(info.linkUrl, info.pageUrl);
 });
 
+// "Download normally": the downloads LinkUnzip started itself for a minute, url -> expiry, so
+// they aren't caught again.
+const BYPASS_MS = 60_000;
+
+/** The "download normally" links still in their minute (the expired ones left out). */
+async function readBypass() {
+  const { bypass = {} } = await chrome.storage.session.get("bypass").catch(() => ({}));
+  const now = Date.now();
+  return Object.fromEntries(Object.entries(bypass).filter(([, expiry]) => expiry > now));
+}
+
 function looksLikeZip(item) {
   const mime = (item.mime || "").toLowerCase();
   return mime === "application/zip" || mime === "application/x-zip-compressed" || /\.zip($|[?#])/i.test(item.url) || /\.zip$/i.test(item.filename || "");
@@ -1196,8 +1358,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const settings = await getSettings();
   if (!settings.catchDownloads || item.byExtensionId) return;
   if (!/^https?:\/\//i.test(item.url) || !looksLikeZip(item)) return;
-  const expiry = bypass.get(item.url);
-  if (expiry && expiry > Date.now()) return;
+  if ((await readBypass())[item.url]) return;
 
   // Pause the browser's own download rather than cancel it: some links only work once, and the
   // popup offers to continue it. It is cancelled once LinkUnzip extracted the files.

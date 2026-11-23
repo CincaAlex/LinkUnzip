@@ -76,5 +76,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           node tools/engine_test.mjs $data
 
+      # The Python script the extension writes for another machine, run for real and compared
+      # byte for byte with the zip's contents.
+      - name: Command tests
+        timeout-minutes: 10
+        run: node tools/command_test.mjs
+
       - name: Python syntax (tools)
         run: python -m py_compile (Get-ChildItem tools -Filter *.py).FullName

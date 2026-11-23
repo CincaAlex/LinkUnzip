@@ -1,6 +1,16 @@
 // Small helpers shared by the background worker and the popup.
 
-import { num, t } from "./i18n.js";
+import { num, t, tn } from "./i18n.js";
+
+/** "1 file", "5,518 files", in the language shown. */
+export const files = (n) => tn("{count} file", "{count} files", n);
+
+// Characters that reorder the text around them: `invoice<U+202E>fdp.exe` would show as
+// "invoiceexe.pdf". Names from a zip or a server are shown with each one spelled out instead.
+const BIDI_CONTROLS = /[‪-‮⁦-⁩]/g;
+
+/** A name from a zip or a link, safe to show: direction controls made visible as "(U+202E)". */
+export const safeName = (name) => String(name).replace(BIDI_CONTROLS, (c) => `(U+${c.charCodeAt(0).toString(16).toUpperCase()})`);
 
 /**
  * Same units as the LinkUnzip CLI and Windows Explorer: 1024-based steps, labelled KB/MB/GB/TB
@@ -70,6 +80,25 @@ export function joinPath(base, name) {
   return `${base.replace(/[\\/]+$/, "")}\\${name}`;
 }
 
+/** The last part of a path inside the zip: `c.txt` for `a/b/c.txt`. */
+export const fileName = (path) => path.slice(path.lastIndexOf("/") + 1);
+
+/** "jpg" for "a/b.JPG"; "" when there is none (".gitignore" has none). */
+export function extensionOf(path) {
+  const base = fileName(path);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+}
+
+/** "a/b/c.txt" -> "a/b/", "a/b/" -> "a/", "a/" -> "", and "" (the whole zip) -> null. */
+export function parentOf(path) {
+  if (path === "") return null;
+  const trimmed = path.endsWith("/") ? path.slice(0, -1) : path;
+  const i = trimmed.lastIndexOf("/");
+  return i < 0 ? "" : trimmed.slice(0, i + 1);
+}
+
+/** The site of a link (`example.com:8080`), or "" for something that isn't one. */
 export function hostOf(url) {
   try {
     return new URL(url).host;

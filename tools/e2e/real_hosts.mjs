@@ -68,7 +68,7 @@ async function main() {
       // Into that folder, not Downloads (Chrome's downloads save about 8 files a second).
       const { loadSettings } = await import("./settings.js");
       await chrome.storage.local.set({ settings: { ...(await loadSettings()), saveTo: "folder" } });
-      await chrome.runtime.sendMessage({ cmd: "baseFolderChanged" });
+      await chrome.runtime.sendMessage({ cmd: "folderChanged" });
     });
     const send = (cmd, data = {}) => page.evaluate((m) => chrome.runtime.sendMessage(m), { cmd, ...data });
     const job = (j) => page.evaluate((x) => chrome.storage.session.get("jobs").then((s) => s.jobs?.[x]), j);

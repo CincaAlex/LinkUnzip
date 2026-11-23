@@ -7,7 +7,7 @@ What a release publishes (GitHub Release, built by `.github/workflows/release.ym
 
 | File | For |
 |---|---|
-| `linkunzip-setup.exe` | the Windows helper. The name never changes, so `https://github.com/CincaAlex/LinkUnzip/releases/latest/download/linkunzip-setup.exe` always gives the newest published one: that is the extension's `DOWNLOAD_URL`. |
+| `linkunzip-setup.exe` | the Windows helper. The name never changes, so `https://github.com/CincaAlex/LinkUnzip/releases/latest/download/linkunzip-setup.exe` always gives the newest published one. |
 | `linkunzip-extension-X.Y.Z.zip` | the extension for the Chrome Web Store and Edge Add-ons (no development `key`) |
 | `SHA256SUMS.txt` | checksums of both |
 
@@ -61,13 +61,9 @@ In `CHANGELOG.md`, rename *Unreleased* to `## X.Y.Z - YYYY-MM-DD` and start a ne
 *Unreleased* above it. The workflow copies the section that starts with `## X.Y.Z` into the
 release notes, so keep that exact heading format.
 
-### 3. First release only: `DOWNLOAD_URL`
+### 3. The helper link
 
-Set `DOWNLOAD_URL` in `extension/config.js` to
-`https://github.com/CincaAlex/LinkUnzip/releases/latest/download/linkunzip-setup.exe` **in the
-release commit**, so the store zip built from the tag already points there. The link starts
-working the moment the release is published. Once it is set, an unpacked copy of the extension
-also downloads the published helper instead of the copy `package.py` bundles.
+Nothing to change: the setup page (`extension/welcome.html`) links to the latest GitHub release.
 
 ### 4. Local checks before tagging
 

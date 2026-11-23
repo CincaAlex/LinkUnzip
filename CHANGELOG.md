@@ -7,6 +7,66 @@ keeps its older version until the next full release.
 
 ## Unreleased
 
+## 1.4.0 - 2026-11-23 (extension only)
+
+### Added
+- **Recent zips** on the popup's start screen: the last zips you opened, one click to open again
+  (from the saved index when it's still there), with their size and folder. Kept on this PC only;
+  *Clear* empties the list and *Settings > Remember recent zips* turns it off.
+- **Recent folders**: the last 5 folders you picked are offered under the folder row, one click
+  each, no folder picker needed.
+- **Sample...** in the file list: tick N random files from the folder shown, the search results or
+  the whole zip, optionally of one file type. Drawn from the index, so nothing is downloaded to pick
+  them, and the same seed gives the same files on every computer.
+- **Share...** in the file list: *Copy share link* makes a `linkunzip.app/open` link that opens
+  LinkUnzip with this zip and these ticks (a random sample travels as its seed); *Copy as command*
+  gives the same files on another machine: a Python script that needs nothing installed (Linux,
+  Mac or Windows PowerShell), a `remotezip` line, or the Windows helper's command line.
+- **Image grid** (*Settings > Image grid*, off by default): a *Grid* button shows a folder's images
+  as thumbnails in the preview tab, loaded only as you scroll, with tick boxes that stay in step
+  with the file list.
+- **Paste** next to the link box puts a copied link in it. The first click asks the browser for
+  permission to read the clipboard (an optional permission: nothing is asked at install or update).
+- The start screen says how many zip links it found on the page ("2 zips on this page").
+- **Type filter** above the file list: *All*, *Media*, *Docs* and *Data*, offered for the kinds of
+  files the zip has.
+- **Data files in the preview**: JSON Lines as a table, JSON pretty-printed (exact numbers kept),
+  NumPy `.npy` shape, type and first values.
+
+### Changed
+- The file list is a tree: folders open in place under their parent, with a line down each open
+  folder to its last entry, a mark for each file type, the file count next to each folder, and
+  keys like a file manager's (Right opens a folder, Left closes it, Space ticks). Screen readers get
+  it as a tree with checked, partly checked and open states. *Select all* and *Select none* moved
+  into the *More* menu (they stay next to the results while searching).
+- Paste and Inspect are smaller, so the link box has room.
+- A new setup page after install: what LinkUnzip does in one screen, the choices before you start
+  (where files go, site access), and the three ways to use it, with pictures of the new popup.
+- In Edge, LinkUnzip's texts say Edge instead of Chrome, its buttons open Edge's own downloads and
+  settings pages, and the "ask where to save" tip describes Edge's setting. Texts that said
+  "Windows" when they meant your computer are worded for every system ("Match system" in
+  Settings).
+- *Share...* puts *Copy share link* on its own line, so its buttons show their full names.
+- The image grid says at the top what a preview downloads, and that nothing is saved.
+- Opening a zip reads its totals from the file tree instead of a second pass over every entry, and
+  finds the biggest files without sorting them all.
+- One check of size and CRC-32 for extraction, one-pass extraction and the preview; the preview
+  reads an image into one blob instead of copying every piece.
+- The preview tab's header was nearly invisible in the light theme.
+- In Edge, the rating line on the Done screen points to LinkUnzip on Edge Add-ons, where Edge
+  installs come from, instead of the Chrome Web Store.
+
+### Fixed
+- Extracting a zip with tens of thousands of small files into a folder could freeze LinkUnzip
+  after a minute or two: the popup stopped opening and the browser finally closed the extension.
+  Files waiting for the browser to finish saving them made LinkUnzip use more and more memory.
+  It now stays at about 25 MB, and the popup opens right away during the whole extraction.
+
+### Tests
+- `tools/command_test.mjs` (also in CI) runs the generated Python script against a local server
+  and compares the files byte for byte. The engine tests cover the random sample and the share
+  link format (every limit and refusal).
+
 ## 1.3.0 - 2026-11-11 (extension only)
 
 ### Added

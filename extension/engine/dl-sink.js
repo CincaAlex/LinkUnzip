@@ -6,6 +6,7 @@
 // Each file is checked (size and CRC-32) before Chrome gets it, and Chrome only gives a file its
 // real name once all of it is written, so a file that didn't check out never appears.
 
+import { extensionOf } from "../fmt.js";
 import { t } from "../i18n.js";
 import { Coded } from "./errors.js";
 
@@ -28,8 +29,7 @@ function downloadsComponent(c) {
   let s = c.replace(BAD_ANYWHERE, "_");
   if (/^[\s.]/u.test(s)) s = `_${s}`;
   if (/[\s.]$/u.test(s)) s = `${s}_`;
-  const dot = s.lastIndexOf(".");
-  const ext = dot > 0 ? s.slice(dot + 1).toLowerCase() : "";
+  const ext = extensionOf(s);
   if (SHELL_EXTENSIONS.has(ext) || /^\{.*\}$/.test(ext)) s = `${s}_`;
   if (MAGIC_NAMES.has(s.toLowerCase()) || DEVICES.test(s)) s = `_${s}`;
   return s;
@@ -37,13 +37,11 @@ function downloadsComponent(c) {
 
 // Types Chrome's downloads hold back until the user clicks Keep on each file (measured in Chrome
 // 155 on Windows; .exe, .msi, .bat or .ps1 go through). A folder the user picked doesn't ask.
-const HELD_BACK = new Set(["dll", "ini", "cfg", "manifest", "crx", "jse", "wsf", "cpl"]);
+export const HELD_BACK = new Set(["dll", "ini", "cfg", "manifest", "crx", "jse", "wsf", "cpl"]);
 
 /** The extension of `name` if Chrome's downloads hold such files back, else "". */
 export function heldBackType(name) {
-  const base = name.slice(name.lastIndexOf("/") + 1);
-  const dot = base.lastIndexOf(".");
-  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+  const ext = extensionOf(name);
   return HELD_BACK.has(ext) ? ext : "";
 }
 
@@ -198,12 +196,12 @@ function fromSave(r, path) {
   const detail = `${path}: ${r.error || r.code}`;
   switch (r.code) {
     case "ask_where":
-      return new Coded("ask_where", t("Chrome is set to ask where to save each download."), { detail });
+      return new Coded("ask_where", t("{browser} is set to ask where to save each download."), { detail });
     case "disk_full":
       return new Coded("disk_full", t("The drive is full."), { detail });
     case "bad_name":
-      return new Coded("folder_not_writable", t("Chrome's downloads didn't accept the name {name}.", { name: path }), { detail });
+      return new Coded("folder_not_writable", t("{browser}'s downloads didn't accept the name {name}.", { name: path }), { detail });
     default:
-      return new Coded("folder_not_writable", t("Chrome couldn't save {name} into Downloads.", { name: path }), { detail });
+      return new Coded("folder_not_writable", t("{browser} couldn't save {name} into Downloads.", { name: path }), { detail });
   }
 }

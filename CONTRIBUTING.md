@@ -24,9 +24,14 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test                         # unit and integration tests
 Get-ChildItem extension\*.js | ForEach-Object { node --check $_.FullName }
+node tools\i18n_check.mjs          # every sentence in every language, same placeholders
+python tools\make_test_zips.py all-small --out <data>
+node tools\engine_test.mjs <data>  # the browser engine under Node, against a local Range server
+node tools\command_test.mjs        # the Python script of "Copy as command", byte for byte
 ```
 
-CI runs exactly these on every push and pull request (`.github/workflows/ci.yml`). One more test
+CI runs exactly these on every push and pull request (`.github/workflows/ci.yml`). The engine test
+serves `<data>` on port 8190; set `ENGINE_TEST_PORT` to another port when something else uses it. One more test
 needs about 5 GB of disk, so it only runs on request:
 
 ```powershell
@@ -62,6 +67,10 @@ node tools\e2e\extension.mjs        # --stubs-only for the quick part without lo
 ```
 
 It needs about 1 GB of demo data and a real helper install, so it runs locally rather than in CI.
+
+`tools/e2e/browser_engine.mjs <data>` runs the browser engine in real Chrome (extracting with
+SHA-256 checks, Resume, preview, a zip with 70,000 files); `--features` runs only passwords, zips
+inside zips, one-pass extraction and the streamed preview.
 
 `tools/e2e/helper.mjs` checks Settings > Extract with the Windows helper with the helper you just
 built (`cargo build`), without installing it: the extension reaches it through a small local

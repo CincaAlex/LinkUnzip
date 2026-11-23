@@ -5,7 +5,8 @@
 // Every folder also carries the totals of everything under it, so the totals of a selection add
 // up whole folders and only look at single files where a tick inside differs.
 
-import { heldBackType } from "./dl-sink.js";
+import { extensionOf, fileName } from "../fmt.js";
+import { HELD_BACK, heldBackType } from "./dl-sink.js";
 import { globToRegExp, listPath, nearestMark } from "./plan.js";
 import { isDir, needsPassword, unsupportedShort } from "./zip.js";
 
@@ -14,8 +15,22 @@ export const MAX_LIMIT = 2000;
 const LISTING_BUDGET = 4_000_000;
 /** File types listed for the search chips. */
 const TOP_EXTENSIONS = 6;
+/** A random sample picks at most this many files. */
+export const MAX_SAMPLE = 10_000;
 
-const fileName = (path) => path.slice(path.lastIndexOf("/") + 1);
+/**
+ * mulberry32: a tiny seeded generator. Plain 32-bit integer math, so the same seed gives the same
+ * numbers in every browser and in Node, and a shared sample picks the same files on every PC.
+ */
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 /** `{held_back, held_back_types}`: files Chrome's downloads would hold back, most common type first. */
 export function heldBack(counts) {
@@ -24,21 +39,22 @@ export function heldBack(counts) {
 }
 const byKey = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** "jpg" for "a/b.JPG"; "" without one. */
-function extensionOf(path) {
-  const base = fileName(path);
-  const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
-}
-
-/** A search as the file list types it: `*.jpg`-style patterns, or text anywhere in the path. */
+/**
+ * A search as the file list types it: `*.jpg`-style patterns, or text anywhere in the path. The
+ * file list's type filter puts `ext:jpg,png ` in front: only those types, then the rest as usual.
+ */
 export function matcher(query) {
-  const q = query.trim().toLowerCase();
+  let q = query.trim().toLowerCase();
+  const types = q.match(/^ext:(\S+)\s*/);
+  if (types) q = q.slice(types[0].length);
+  let test = () => true;
   if (/[*?[]/.test(q)) {
     const re = globToRegExp(q);
-    return (lower) => re.test(lower);
-  }
-  return (lower) => lower.includes(q);
+    test = (lower) => re.test(lower);
+  } else if (q) test = (lower) => lower.includes(q);
+  if (!types) return test;
+  const exts = new Set(types[1].split(",").filter(Boolean));
+  return (lower) => exts.has(extensionOf(lower)) && test(lower);
 }
 
 /** Every folder that has `path` somewhere under it ("" for anything but the whole zip itself). */
@@ -57,6 +73,7 @@ export class Tree {
     this.posInFolder = new Int32Array(entries.length).fill(-1);
     this.search = [];
     const exts = new Map();
+    const nameKeys = new Array(entries.length); // a file's lowercase name, for sorting its folder
     entries.forEach((entry, i) => {
       const path = listPath(entry.name);
       const dir = isDir(entry);
@@ -72,12 +89,14 @@ export class Tree {
       }
       if (!dir) {
         const folder = this.folders[current];
+        const ext = extensionOf(path);
         folder.files.push(i);
-        this.countFile(folder, entry);
+        this.countFile(folder, entry, ext);
         this.folderOf[i] = current;
         if (!this.fileIndex.has(path)) this.fileIndex.set(path, i);
-        this.search.push([i, path.toLowerCase()]);
-        const ext = extensionOf(path);
+        const lower = path.toLowerCase();
+        this.search.push([i, lower]);
+        nameKeys[i] = lower.slice(lower.lastIndexOf("/") + 1);
         if (ext) exts.set(ext, (exts.get(ext) || 0) + 1);
       }
     });
@@ -92,15 +111,9 @@ export class Tree {
       if (folder.held) for (const [ext, n] of Object.entries(folder.held)) this.addHeld(p, ext, n);
     }
     const folderKeys = this.folders.map((f) => f.name.toLowerCase());
-    const fileKeys = new Map();
-    const fileKey = (i) => {
-      let k = fileKeys.get(i);
-      if (k === undefined) fileKeys.set(i, (k = fileName(listPath(entries[i].name)).toLowerCase()));
-      return k;
-    };
     for (const folder of this.folders) {
       folder.folders.sort((a, b) => byKey(folderKeys[a], folderKeys[b]));
-      folder.files.sort((a, b) => byKey(fileKey(a), fileKey(b)));
+      folder.files.sort((a, b) => byKey(nameKeys[a], nameKeys[b]));
       folder.files.forEach((i, k) => (this.posInFolder[i] = k));
     }
     this.search.sort((a, b) => byKey(a[1], b[1]));
@@ -127,13 +140,12 @@ export class Tree {
     folder.held[ext] = (folder.held[ext] || 0) + n;
   }
 
-  countFile(folder, entry) {
+  countFile(folder, entry, ext) {
     folder.files_count += 1;
     folder.size += entry.usize;
     folder.compressed += entry.csize;
     if (unsupportedShort(entry)) folder.unsupported += 1;
-    const ext = heldBackType(entry.name);
-    if (ext) this.addHeld(folder, ext, 1);
+    if (HELD_BACK.has(ext)) this.addHeld(folder, ext, 1);
   }
 
   /** Folders, the implied ones included (the root does not count). */
@@ -267,6 +279,43 @@ export class Tree {
       for (const i of folder.files) if (Boolean(on[i]) !== state) out[listPath(this.entries[i].name)] = Boolean(on[i]);
     }
     return { marks: out, matched };
+  }
+
+  /**
+   * `n` files picked at random under folder `scope` ("" for the whole zip), only those the search
+   * `query` finds and with extension `ext` when given. The matches are shuffled in the zip's own
+   * order (not the sorted search order), so the same zip and seed give the same files anywhere.
+   * Returns the file list's marks for them: `{"": false, path: true, ...}`.
+   */
+  sample({ scope = "", query = "", ext = "", n = 0, seed = null } = {}) {
+    if (seed == null || !Number.isFinite(Number(seed))) seed = crypto.getRandomValues(new Uint32Array(1))[0];
+    seed = Number(seed) >>> 0;
+    const test = matcher(query);
+    const wantExt = String(ext).replace(/^\./, "").toLowerCase();
+    const matches = [];
+    for (const [i, lower] of this.search) {
+      if (!test(lower)) continue;
+      const path = listPath(this.entries[i].name);
+      // A name the zip holds twice shows once in the list: count it once.
+      if (this.fileIndex.get(path) !== i) continue;
+      if (scope && !path.startsWith(scope)) continue;
+      if (wantExt && extensionOf(path) !== wantExt) continue;
+      matches.push(i);
+    }
+    const order = Int32Array.from(matches).sort();
+    const want = Math.min(order.length, MAX_SAMPLE, Math.max(0, Math.floor(Number(n) || 0)));
+    // A partial Fisher-Yates: only the first `want` places are shuffled.
+    const rand = mulberry32(seed);
+    for (let k = 0; k < want; k++) {
+      const j = k + Math.floor(rand() * (order.length - k));
+      const swap = order[k];
+      order[k] = order[j];
+      order[j] = swap;
+    }
+    const picked = order.slice(0, want).sort();
+    const marks = { "": false };
+    for (const i of picked) marks[listPath(this.entries[i].name)] = true;
+    return { marks, picked: picked.length, matched: order.length, seed };
   }
 
   /** The file entry shown in the list as `path`, or null. */

@@ -46,7 +46,7 @@ STAGE = os.path.join(DIST, "stage")
 EXT = os.path.join(ROOT, "extension")
 LOCAL = os.environ.get("LOCALAPPDATA", "")
 TARGET = os.environ.get("CARGO_TARGET_DIR") or os.path.join(ROOT, "target")
-BUNDLED_SETUP = "linkunzip-setup.exe"  # copied into extension/ for unpacked test installs, never into the store zip
+BUNDLED_SETUP = "linkunzip-setup.exe"  # older builds copied it into extension/; never into the store zip
 
 
 def cargo_version():
@@ -227,8 +227,6 @@ def main():
     if sign_cmd:
         sign(sign_cmd, os.path.join(STAGE, "linkunzip.exe"))
     setup = installer(version, sign_cmd)
-    # The unpacked (test) extension offers this copy on its setup page while DOWNLOAD_URL is empty.
-    shutil.copy2(setup, os.path.join(EXT, BUNDLED_SETUP))
     ext_zip = store_zip(version)
     sums = checksums([setup, ext_zip])
     print(f"LinkUnzip {version}, {'signed' if sign_cmd else 'unsigned'}  (extension ids: {', '.join(ids)})")
