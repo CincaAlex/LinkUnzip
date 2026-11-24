@@ -7,6 +7,14 @@ keeps its older version until the next full release.
 
 ## Unreleased
 
+## 1.4.1 - 2026-11-24 (extension only)
+
+### Added
+- **What's new** after an update: when LinkUnzip updates, the popup shows a small
+  card (until you dismiss it) saying what the new version added, with a dot on each new button until you use it and a
+  *What's new* link in the footer. *Got it* or the link clears the card. Nothing opens by itself,
+  and a fresh install shows none of it.
+
 ## 1.4.0 - 2026-11-23 (extension only)
 
 ### Added

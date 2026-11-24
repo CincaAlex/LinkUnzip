@@ -8,7 +8,10 @@ import { h } from "./dom.js";
 
 let next = 0;
 
-/** `items`: [{ label, onSelect }]. Returns the button; the menu follows it in the DOM. */
+/**
+ * `items`: [{ label, onSelect, attrs }], `attrs` being extra attributes for the item (optional).
+ * Returns the button; the menu follows it in the DOM.
+ */
 export function menu(label, items) {
   const id = `menu-${++next}`;
   const btn = h("button", { type: "button", class: "link small menu-btn", "aria-haspopup": "menu", "aria-expanded": "false", "aria-controls": id }, label);
@@ -20,6 +23,7 @@ export function menu(label, items) {
         type: "button",
         role: "menuitem",
         tabindex: "-1",
+        ...item.attrs,
         onclick: () => {
           list.hidePopover();
           item.onSelect();

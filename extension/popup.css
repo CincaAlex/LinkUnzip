@@ -1792,6 +1792,97 @@ fieldset.choice legend {
   background: var(--err);
 }
 
+/* ---- what's new, after an update (whatsnew.js) ---- */
+
+.card.whats-new {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--border-strong);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.whats-new h2 {
+  font-size: 13.5px;
+}
+.whats-new dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 0;
+}
+.whats-new dt {
+  font-weight: 600;
+}
+.whats-new dd {
+  margin: 0;
+  color: var(--muted);
+}
+.whats-new .btn-row {
+  gap: 6px;
+}
+.whats-new button.btn,
+.whats-new button.btn.primary {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+/* A button of a feature the last update added: a dot at its top-right corner until its first click.
+   The More menu shows one too while an item inside it has one. */
+[data-new],
+.menu-wrap:has(.menu [data-new]) > .menu-btn {
+  position: relative;
+}
+[data-new]::before,
+.menu-wrap:has(.menu [data-new]) > .menu-btn::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+}
+.menu [role="menuitem"][data-new] {
+  padding-inline-end: 24px;
+}
+.menu [role="menuitem"][data-new]::before {
+  top: calc(50% - 3.5px);
+  right: 8px;
+}
+.menu-wrap:has(.menu [data-new]) > .menu-btn::before {
+  top: -3px;
+  right: -7px;
+}
+
+/* The footer, only after an update: the version, and what changed. */
+.foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 12px 7px;
+  border-top: 0.5px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+}
+.foot button.link::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-inline-end: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+
 /* The ready view: a tighter strip under the file list, so the list gets the height. */
 body.fill main {
   gap: 8px;

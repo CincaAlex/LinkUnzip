@@ -15,6 +15,7 @@ import { menu } from "./menu.js";
 import { recentList, sampleTool, shareTool } from "./popup-tools.js";
 import { engineFor, helperCanExtract } from "./route.js";
 import { ALL_SITES, DEFAULT_SETTINGS, applyTheme, effectiveTheme, loadSettings } from "./settings.js";
+import { CHANGELOG_URL, WHATS_NEW, validWhatsNew } from "./whatsnew.js";
 
 const view = document.getElementById("view");
 const windowMode = new URLSearchParams(location.search).has("window");
@@ -101,8 +102,111 @@ async function loadState() {
   };
   drafts = s.drafts || {};
   settings = await loadSettings();
+  const { whatsNew } = await chrome.storage.local.get("whatsNew");
+  news = validWhatsNew(whatsNew);
   return s.pendingExtract || null;
 }
+
+// ---------------------------------------------------------------------------------------
+// What's new after an update (whatsnew.js)
+// ---------------------------------------------------------------------------------------
+
+// chrome.storage.local "whatsNew": the parts still to show ({ version, dots, card, link }), or null.
+let news = null;
+
+/** Store what is left to show; with nothing left, the key goes. */
+function saveNews() {
+  if (!news) return Promise.resolve();
+  if (!news.card && !news.link && !news.dots?.length) {
+    news = null;
+    return chrome.storage.local.remove("whatsNew");
+  }
+  return chrome.storage.local.set({ whatsNew: news });
+}
+
+/** `id` for a button's data-new while its feature is still new, else null (no attribute). */
+const newDot = (id) => (news?.dots?.includes(id) ? id : null);
+
+// A button marked as new loses its dot on its first click; the click still does its job.
+document.addEventListener(
+  "click",
+  (e) => {
+    const id = e.target.closest?.("[data-new]")?.dataset.new;
+    if (!id || !news?.dots?.includes(id)) return;
+    news.dots = news.dots.filter((d) => d !== id);
+    saveNews();
+    syncNews();
+  },
+  true,
+);
+
+/** The changelog in a new tab; the card and the footer link have done their job. */
+async function openChangelog({ link = false } = {}) {
+  news.card = false;
+  if (link) news.link = false;
+  await saveNews();
+  syncNews();
+  chrome.tabs.create({ url: CHANGELOG_URL });
+}
+
+/** The card at the top of the view: what the update added, Got it and See all changes. */
+function newsCard() {
+  if (!news?.card) return null;
+  const titleId = "whats-new-title";
+  return h(
+    "section",
+    { id: "whats-new", class: "card whats-new", "aria-labelledby": titleId },
+    h("h2", { id: titleId }, t("What's new in {version}", { version: news.version })),
+    h(
+      "dl",
+      {},
+      WHATS_NEW[news.version].lines.flatMap((line) => {
+        const [name, text] = line();
+        return [h("dt", {}, name), h("dd", {}, text)];
+      }),
+    ),
+    h(
+      "div",
+      { class: "btn-row" },
+      h(
+        "button",
+        {
+          type: "button",
+          class: "btn primary small",
+          onclick: () => {
+            news.card = false;
+            saveNews();
+            syncNews();
+          },
+        },
+        t("Got it"),
+      ),
+      h("button", { type: "button", class: "btn small", onclick: () => openChangelog() }, t("See all changes")),
+    ),
+  );
+}
+
+/** Bring the page in line with `news`: dots, card and footer go as soon as they are cleared. */
+function syncNews() {
+  for (const el of document.querySelectorAll("[data-new]")) {
+    if (!news?.dots?.includes(el.dataset.new)) el.removeAttribute("data-new");
+  }
+  if (!news?.card) document.getElementById("whats-new")?.remove();
+  const foot = document.getElementById("foot");
+  foot.hidden = !news?.link;
+  if (foot.hidden) return foot.replaceChildren();
+  if (foot.childElementCount) return;
+  foot.append(
+    h("span", {}, `LinkUnzip ${chrome.runtime.getManifest().version}`),
+    h("button", { type: "button", class: "link quiet", onclick: () => openChangelog({ link: true }) }, t("What's new")),
+  );
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.whatsNew) return;
+  news = validWhatsNew(changes.whatsNew.newValue);
+  syncNews();
+});
 
 // ---------------------------------------------------------------------------------------
 // Folders
@@ -431,6 +535,9 @@ function render() {
   const views = { inspecting: inspectingView, ready: readyView, extracting: extractingView, done: doneView, cancelled: cancelledView };
   if (!job) pickView();
   else (views[job.phase] || errorView)(job);
+  // After an update: what it added, on top until dismissed.
+  const card = newsCard();
+  if (card) view.prepend(card);
   // The view's buttons go in their strip under the scrolling middle.
   const bar = view.querySelector(":scope > .actions");
   if (bar) slot.append(bar);
@@ -603,7 +710,7 @@ function pickView() {
         { class: "muted" },
         t("Paste a link to a .zip, or right-click one on any page. LinkUnzip reads the index first, then streams every file straight into a folder."),
       ),
-      h("div", { class: "url-row" }, input, h("button", { class: "btn small", type: "button", onclick: paste }, t("Paste")), inspect),
+      h("div", { class: "url-row" }, input, h("button", { class: "btn small", type: "button", "data-new": newDot("paste"), onclick: paste }, t("Paste")), inspect),
       problem,
     ),
     hostBanner(),
@@ -949,8 +1056,8 @@ function readyView(job) {
         { label: t("Select all"), onSelect: () => chooser.selectAll(true) },
         { label: t("Select none"), onSelect: () => chooser.selectAll(false) },
         { label: t("Pattern..."), onSelect: () => patternBtn.click() },
-        { label: t("Sample..."), onSelect: () => sample.btn.click() },
-        { label: t("Share..."), onSelect: () => share.btn.click() },
+        { label: t("Sample..."), attrs: { "data-new": newDot("sample") }, onSelect: () => sample.btn.click() },
+        { label: t("Share..."), attrs: { "data-new": newDot("share") }, onSelect: () => share.btn.click() },
         settings.imageGrid ? { label: t("Grid"), onSelect: () => gridOpen() } : null,
       ]),
     ],
@@ -1636,6 +1743,7 @@ if (windowMode && query.has("start") && handedOver) {
   }
 }
 render();
+syncNews();
 if (query.has("settings")) toggleSettings(true);
 if (windowMode && query.has("change")) {
   announce(t("Click Change... to choose the folder."));

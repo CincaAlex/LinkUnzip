@@ -28,6 +28,7 @@ import { rememberZip } from "./recent.js";
 import { decodeSelection } from "./selection.js";
 import { loadSettings, migrate } from "./settings.js";
 import { indexCache, savedCount } from "./store.js";
+import { whatsNewState } from "./whatsnew.js";
 
 // The viewer's big files (video, audio, PDF) come from this worker, straight from the zip.
 self.addEventListener("fetch", handlePreviewFetch);
@@ -1322,7 +1323,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Right-click menu and download interception
 // ---------------------------------------------------------------------------------------
 
-chrome.runtime.onInstalled.addListener(async ({ reason }) => {
+chrome.runtime.onInstalled.addListener(async ({ reason, previousVersion }) => {
   await useLanguage().catch(() => {});
   chrome.contextMenus.create({ id: MENU_ID, title: t("Extract with LinkUnzip"), contexts: ["link"] });
   // On install and on every update, so the version in the address stays current.
@@ -1332,6 +1333,13 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   // Settings saved by an older version: store them in today's shape.
   const { settings } = await chrome.storage.local.get("settings");
   if (settings) await chrome.storage.local.set({ settings: migrate(settings) });
+  // After an update to a version with news, the popup shows it once (whatsnew.js).
+  if (reason === "install") {
+    await chrome.storage.local.remove("whatsNew");
+  } else if (reason === "update") {
+    const news = whatsNewState(previousVersion, chrome.runtime.getManifest().version);
+    if (news) await chrome.storage.local.set({ whatsNew: news });
+  }
 });
 
 chrome.contextMenus.onClicked.addListener((info) => {
